@@ -3,9 +3,13 @@ package com.XDurango.VoLlama
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
 import com.google.android.gms.nearby.connection.ConnectionInfo
 class ViewModelApp(application: Application): AndroidViewModel(application){
     val nearbyService = NearbyConnectionService(application)
+
+    private val _toastMessage = MutableLiveData<String?>()
+    val toastMessage: LiveData<String?> = _toastMessage
 
     val isStreamingAudio: LiveData<Boolean> = nearbyService.isStreamingAudio
     val isReceivingAudio: LiveData<Boolean> = nearbyService.isReceivingAudio
@@ -26,36 +30,41 @@ class ViewModelApp(application: Application): AndroidViewModel(application){
     // ========== FUNCIONES PÚBLICAS ==========
     fun startAdvertising() {
         nearbyService.startAdvertising(
-            onSuccess = { /* Log o actualizar UI */ },
-            onFailure = { exception -> /* Manejar error */ }
+            onSuccess = { _toastMessage.value = "Esperando conexión" },
+            onFailure = { exception -> _toastMessage.value = "error en broadcast" }
         )
     }
 
     fun stopAdvertising() {
         nearbyService.stopAdvertising()
+        _toastMessage.value = "Broadcast terminado"
     }
 
     fun startDiscovery() {
         nearbyService.startDiscovery(
-            onSuccess = { /* Log o actualizar UI */ },
-            onFailure = { exception -> /* Manejar error */ }
+            onSuccess = { _toastMessage.value = "Buscando dispositivos" },
+            onFailure = { exception -> _toastMessage.value = "error en busqueda" }
         )
     }
 
     fun stopDiscovery() {
         nearbyService.stopDiscovery()
+        _toastMessage.value = "busqueda terminada"
     }
 
     fun connectToEndpoint(endpointId: String) {
         nearbyService.requestConnection(endpointId)
+        _toastMessage.value ="Intentando conectar a dispositivo"
     }
 
     fun acceptConnection(endpointId: String) {
         nearbyService.acceptConnection(endpointId)
+        _toastMessage.value = "conexion aceptada"
     }
 
     fun rejectConnection(endpointId: String) {
         nearbyService.rejectConnection(endpointId)
+        _toastMessage.value = "conexion rechazada"
     }
 
     fun startVoiceStreaming(endpointId: String) {
@@ -84,6 +93,11 @@ class ViewModelApp(application: Application): AndroidViewModel(application){
 
     fun disconnectAll() {
         nearbyService.disconnectFromAll()
+        _toastMessage.value = "terminando servicio - cerrando conexiones"
+    }
+
+    fun clearToastMessage(){
+        _toastMessage.value = null
     }
 
     override fun onCleared() {
