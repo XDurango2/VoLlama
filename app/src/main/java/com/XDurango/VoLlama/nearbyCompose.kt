@@ -66,7 +66,6 @@ import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun OnConnectionInitiatedDialog(
-    endpointId: String,
     info: ConnectionInfo,
     onDismissRequest: () -> Unit,
     onConfirmation: () -> Unit
@@ -532,7 +531,6 @@ fun MainMenuScreen(
     // ---------- CONNECTION CONFIRMATION ----------
     viewModel.showConnectionDialog.observeAsState().value?.let { (id, info) ->
         OnConnectionInitiatedDialog(
-            endpointId = id,
             info = info,
             onDismissRequest = { viewModel.rejectConnection(id) },
             onConfirmation = { viewModel.acceptConnection(id) }
