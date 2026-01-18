@@ -4,6 +4,7 @@ package com.XDurango.VoLlama
 data class MainMenuUiState(
     val showBottomSheet: Boolean = false,
     val selectedIndex: Int = 0,
+    val endpointName: String = "",
 
     val discoveredEndpoints:
     List<NearbyConnectionService.DiscoveredEndpoint> = emptyList(),

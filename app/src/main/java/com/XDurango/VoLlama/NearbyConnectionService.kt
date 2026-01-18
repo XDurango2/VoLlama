@@ -34,6 +34,7 @@ class NearbyConnectionService (private val context: Context) {
         IDLE,
         DISCOVERING,
         ADVERTISING,
+        IN_PROGRESS,
         REJECTED,
         CONNECTION_ERROR,
         CONNECTION_SUCESS
@@ -162,7 +163,7 @@ class NearbyConnectionService (private val context: Context) {
     fun requestConnection(endpointId: String) {
         connectionsClient
             .requestConnection(endpoint, endpointId, connectionLifecycleCallback)
-            .addOnSuccessListener { _showConnectionDialog.postValue(null) }
+            .addOnSuccessListener { }
             .addOnFailureListener { exception -> _showConnectionDialog.postValue(null) }
     }
 
@@ -342,8 +343,8 @@ class NearbyConnectionService (private val context: Context) {
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
-            _showConnectionDialog.postValue(Pair(endpointId, connectionInfo))
-        }
+            _nearbyStatus.value = NearbyStatus.IN_PROGRESS
+            _showConnectionDialog.postValue(endpointId to connectionInfo)        }
 
         override fun onConnectionResult(
             endpointId: String,
@@ -353,8 +354,11 @@ class NearbyConnectionService (private val context: Context) {
                 ConnectionsStatusCodes.STATUS_OK -> {
                     //"Conexion Exitosa!"
                     _nearbyStatus.value = NearbyStatus.CONNECTION_SUCESS
-                    _connectedEnpoints.value?.add(endpointId)
-                    _connectedEnpoints.postValue(_connectedEnpoints.value)
+                    val updated = _connectedEnpoints.value.orEmpty().toMutableSet()
+                    updated.add(endpointId)
+                    _connectedEnpoints.postValue(updated)
+                    stopDiscovery()
+                    stopAdvertising()
                 }
 
                 ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED ->

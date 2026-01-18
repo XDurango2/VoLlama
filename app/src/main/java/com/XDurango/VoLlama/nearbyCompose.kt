@@ -1,5 +1,6 @@
 package com.XDurango.VoLlama
 
+import android.Manifest
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -53,6 +54,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.material3.TopAppBar
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.ManagedActivityResultLauncher
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import android.content.Context
+import android.os.Build
+import androidx.compose.ui.platform.LocalContext
+
 
 @Composable
 fun OnConnectionInitiatedDialog(
@@ -224,6 +234,7 @@ fun ConnectedDeviceCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModalBottom(selectedIndex: Int,
+                endpointName:String,
                 onIndexChange: (Int) -> Unit,
                 discoveredDevices: List<NearbyConnectionService.DiscoveredEndpoint>,
                 onDeviceClick: (String) -> Unit){
@@ -279,7 +290,7 @@ fun ModalBottom(selectedIndex: Int,
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "apareces como ",
+                    text = "apareces como $endpointName",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -345,13 +356,73 @@ fun ModalBottom(selectedIndex: Int,
     }
 }
 
+@Composable
+private fun rememberPermissionLauncher(
+    onGranted: () -> Unit
+): ManagedActivityResultLauncher<Array<String>, Map<String, Boolean>> {
+
+    return rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val allGranted = result.values.all { it }
+        if (allGranted) {
+            onGranted()
+        }
+    }
+}
+
+private fun hasAllPermissions(
+    context: Context,
+    permissions: Array<String>
+): Boolean {
+    return permissions.all {
+        ContextCompat.checkSelfPermission(
+            context,
+            it
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+}
+
+@Composable
+private fun rememberNearbyPermissions(): Array<String> {
+    return remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.NEARBY_WIFI_DEVICES,
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.RECORD_AUDIO
+
+            )
+        }
+    }
+}
+
+
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainMenuScreen(
     viewModel: ViewModelApp = viewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+
     val toastMessage by viewModel.toastMessage.observeAsState()
+    val permissions = rememberNearbyPermissions()
+    val context = LocalContext.current
+    val permissionLauncher = rememberPermissionLauncher(
+        onGranted = {
+            viewModel.onEvent(MainEvent.StartConnection)
+        }
+    )
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -385,7 +456,11 @@ fun MainMenuScreen(
                 text = { Text("Iniciar conexión") },
                 icon = { Icon(Icons.Default.Add, null) },
                 onClick = {
-                    viewModel.onEvent(MainEvent.StartConnection)
+                    if (hasAllPermissions(context ,permissions)) {
+                        viewModel.onEvent(MainEvent.StartConnection)
+                    }else{
+                        permissionLauncher.launch(permissions)
+                    }
                 }
             )
         },
@@ -477,6 +552,7 @@ fun MainMenuScreen(
                 onIndexChange = {
                     viewModel.onEvent(MainEvent.ChangeMode(it))
                 },
+                endpointName = state.endpointName,
                 onDeviceClick = {
                     viewModel.onEvent(MainEvent.Connect(it))
                 }

@@ -1,8 +1,6 @@
 package com.XDurango.VoLlama
 
-import android.Manifest
 import android.app.Application
-import androidx.annotation.RequiresPermission
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -41,9 +39,11 @@ class ViewModelApp(application: Application) : AndroidViewModel(application) {
             }
 
             MainEvent.CloseBottomSheet -> {
-                stopDiscovery()
-                stopAdvertising()
-                _uiState.update { it.copy(showBottomSheet = false) }
+                if (_uiState.value.nearbyStatus != NearbyConnectionService.NearbyStatus.IN_PROGRESS) {
+                    stopDiscovery()
+                    stopAdvertising()
+                    _uiState.update { it.copy(showBottomSheet = false) }
+                }
             }
 
             is MainEvent.ChangeMode -> {
@@ -131,6 +131,9 @@ class ViewModelApp(application: Application) : AndroidViewModel(application) {
             _uiState.update { state ->
                 state.copy(nearbyStatus = it)
             }
+        }
+        _uiState.update { state ->
+            state.copy(endpointName = nearbyService.endpoint)
         }
     }
 
