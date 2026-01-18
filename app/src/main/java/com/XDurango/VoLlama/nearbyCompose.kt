@@ -1,29 +1,19 @@
 package com.XDurango.VoLlama
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.tooling.preview.Preview
-import com.XDurango.VoLlama.ui.theme.VoLlamaTheme
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
@@ -31,34 +21,19 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
 import androidx.compose.material3.SegmentedButton
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlin.collections.emptyList
-import androidx.compose.runtime.livedata.observeAsState
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,11 +41,18 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ButtonDefaults
+import android.util.Log
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.runtime.DisposableEffect
-import org.intellij.lang.annotations.JdkConstants
+import androidx.compose.runtime.remember
+import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
 
 @Composable
 fun OnConnectionInitiatedDialog(
@@ -95,6 +77,33 @@ fun OnConnectionInitiatedDialog(
         }
     )
 }
+@Composable
+fun ConnectionErrorDialog(
+    connectionStatus: NearbyConnectionService.NearbyStatus,
+    onConfirmation: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onConfirmation, // ← Esto faltaba
+        title = { Text("Hubo un Problema") }, // ← Debe ser un @Composable
+        text = { // ← Debe ser un @Composable
+            Text(
+                if (connectionStatus == NearbyConnectionService.NearbyStatus.REJECTED) {
+                    "Conexión Rechazada"
+                } else if (connectionStatus == NearbyConnectionService.NearbyStatus.CONNECTION_ERROR) {
+                    "Hubo un error de conexión, intente nuevamente"
+                } else {
+                    "Error desconocido"
+                }
+            )
+        },
+        confirmButton = {
+            Button(onClick = onConfirmation) {
+                Text("Aceptar")
+            }
+        }
+    )
+}
+
 
 @Composable
 fun DiscoveredDeviceCard(
@@ -170,7 +179,7 @@ fun ConnectedDeviceCard(
 
                 IconButton(onClick = onDisconnect) {
                     Icon(
-                        imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                        imageVector = Icons.Default.Close,
                         contentDescription = "Desconectar"
                     )
                 }
@@ -219,7 +228,14 @@ fun ModalBottom(selectedIndex: Int,
                 discoveredDevices: List<NearbyConnectionService.DiscoveredEndpoint>,
                 onDeviceClick: (String) -> Unit){
     val options = listOf("Quiero conectarme!", "Espero una conexión")
-
+    val deviceCount = discoveredDevices.size
+    // 🔍 DEBUG: Log cada recomposición
+    LaunchedEffect(deviceCount) {
+        Log.d("ModalBottom", "🎨 Recomposed! Device count: $deviceCount")
+        discoveredDevices.forEach {
+            Log.d("ModalBottom", "  📱 ${it.name} - ${it.endpointId}")
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -258,18 +274,25 @@ fun ModalBottom(selectedIndex: Int,
             0 -> {
                 // Modo Discovery
                 Text(
-                    text = "Dispositivos disponibles",
+                    text = "Dispositivos disponibles ($deviceCount)",
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "apareces como ",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
 
                 if (discoveredDevices.isEmpty()) {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(40.dp)
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
@@ -285,7 +308,7 @@ fun ModalBottom(selectedIndex: Int,
                     ) {
                         items(
                             items = discoveredDevices,
-                            key = { it.endpointId }
+                            key = { device -> device.endpointId }
                         ) { device ->
                             DiscoveredDeviceCard(
                                 endpoint = device,
@@ -302,8 +325,8 @@ fun ModalBottom(selectedIndex: Int,
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(48.dp)
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Text(
                         "Esperando que alguien se conecte...",
@@ -324,246 +347,143 @@ fun ModalBottom(selectedIndex: Int,
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun mainMenu() {
-    val context = LocalContext.current
-    val viewmodel: ViewModelApp = viewModel()
+fun MainMenuScreen(
+    viewModel: ViewModelApp = viewModel()
+) {
+    val state by viewModel.uiState.collectAsState()
+    val toastMessage by viewModel.toastMessage.observeAsState()
+
     val snackbarHostState = remember { SnackbarHostState() }
-    // Estados del BottomSheet
-    val sheetState = rememberModalBottomSheetState()
-    var showBottomSheet by remember { mutableStateOf(false) }
-    var selectedIndex by remember { mutableIntStateOf(0) }
 
-    // Observables
-    val toastMessage by viewmodel.toastMessage.observeAsState()
-    val discoveredDevices by viewmodel.discoveredEndpoints.observeAsState(emptyList())
-    val connectedDevices by viewmodel.connectedEndpoints.observeAsState(emptySet())
-    val connectionDialog by viewmodel.showConnectionDialog.observeAsState(null)
-    val isStreamingAudio by viewmodel.isStreamingAudio.observeAsState(false)
-    val isReceivingAudio by viewmodel.isReceivingAudio.observeAsState(false)
-
-    // Snackbar effect
+    // ---------- ONE SHOT UI EFFECTS ----------
     LaunchedEffect(toastMessage) {
-        toastMessage?.let { message ->
-            snackbarHostState.showSnackbar(
-                message = message,
-                duration = SnackbarDuration.Short
-            )
-            viewmodel.clearToastMessage()
-        }
-    }
-    //  Cerrar el sheet cuando hay dispositivos conectados
-    LaunchedEffect(connectedDevices) {
-        if (connectedDevices.isNotEmpty() && showBottomSheet) {
-            showBottomSheet = false
-            viewmodel.stopDiscovery()
-            viewmodel.stopAdvertising()
+        toastMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearToastMessage()
         }
     }
 
-    // Permisos
-    val nearbyPermissions = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.NEARBY_WIFI_DEVICES,
-                Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            )
-        } else {
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.RECORD_AUDIO
-            )
-        }
-    }
-
-    // Función de utilidad estable
-    val hasPermissions = remember(nearbyPermissions) {
-        {
-            nearbyPermissions.all {
-                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-            }
-        }
-    }
-
-    // Launcher de permisos
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
-        val allGranted = result.values.all { it }
-        if (!allGranted) {
-            Toast.makeText(
-                context,
-                "Permisos requeridos para Nearby Connections",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-
-
-    // Manejar discovery/advertising - SOLO cuando el sheet está visible
-    LaunchedEffect(showBottomSheet, selectedIndex) {
-        if (showBottomSheet) {
-            if (selectedIndex == 0) {
-                viewmodel.startDiscovery()
-            } else {
-                viewmodel.startAdvertising()
-            }
-        }
-    }
-
-    // Cleanup cuando se cierra el sheet
-    DisposableEffect(showBottomSheet) {
-        onDispose {
-            if (!showBottomSheet) {
-                viewmodel.stopDiscovery()
-                viewmodel.stopAdvertising()
-            }
-        }
-    }
-
-    // 🔥 Box principal que contiene todo
-    Box(modifier = Modifier.fillMaxSize()) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("VoLlama - Voice Chat") },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                )
-            },
-            floatingActionButton = {
-                ExtendedFloatingActionButton(
-                    text = { Text("Iniciar conexión") },
-                    icon = { Icon(Icons.Filled.Add, contentDescription = "") },
-                    onClick = {
-                        if (hasPermissions()) {
-                            showBottomSheet = true
-                        } else {
-                            permissionLauncher.launch(nearbyPermissions)
-                        }
-                    }
-                )
-            }
-        ) { paddingValues ->
-
-            if (connectedDevices.isNotEmpty()) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item {
-                        Text(
-                            "Dispositivos Conectados",
-                            style = MaterialTheme.typography.headlineSmall,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
-
-                    items(
-                        items = connectedDevices.toList(),
-                        key = { it }
-                    ) { endpointId ->
-                        ConnectedDeviceCard(
-                            endpointId = endpointId,
-                            isStreaming = isStreamingAudio,
-                            isReceiving = isReceivingAudio,
-                            onStartStreaming = { viewmodel.startVoiceStreaming(endpointId) },
-                            onStopStreaming = { viewmodel.stopVoiceStreaming() },
-                            onDisconnect = { viewmodel.disconnectAll() }
-                        )
-                    }
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            "No hay dispositivos conectados",
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        Text(
-                            "Presiona el botón + para comenzar",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-
-            // Diálogo de confirmación
-            connectionDialog?.let { (endpointId, info) ->
-                OnConnectionInitiatedDialog(
-                    endpointId = endpointId,
-                    info = info,
-                    onDismissRequest = {
-                        viewmodel.rejectConnection(endpointId)
-                    },
-                    onConfirmation = {
-                        viewmodel.acceptConnection(endpointId)
-                    }
-                )
-            }
-        }
-
-        // 🔥 Modal Bottom Sheet FUERA del Scaffold
-        if (showBottomSheet) {
-            ModalBottomSheet(
-                onDismissRequest = {
-                    showBottomSheet = false
-                    viewmodel.stopDiscovery()
-                    viewmodel.stopAdvertising()
-                },
-                sheetState = sheetState
-            ) {
-                ModalBottom(
-                    selectedIndex = selectedIndex,
-                    onIndexChange = { newIndex ->
-                        if (selectedIndex == 0) {
-                            viewmodel.stopDiscovery()
-                        } else {
-                            viewmodel.stopAdvertising()
-                        }
-
-                        selectedIndex = newIndex
-                    },
-                    discoveredDevices = discoveredDevices,
-                    onDeviceClick = { endpointId ->
-                        viewmodel.connectToEndpoint(endpointId)
-                    }
-                )
-            }
-        }
-
-        // 🔥 SnackbarHost al FINAL (arriba de todo)
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 16.dp)
+    // ---------- ERROR DIALOG ----------
+    if (
+        state.nearbyStatus == NearbyConnectionService.NearbyStatus.REJECTED ||
+        state.nearbyStatus == NearbyConnectionService.NearbyStatus.CONNECTION_ERROR
+    ) {
+        ConnectionErrorDialog(
+            connectionStatus = state.nearbyStatus,
+            onConfirmation = { viewModel.resetNearbyStatus() }
         )
     }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("VoLlama - Voice Chat") }
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                text = { Text("Iniciar conexión") },
+                icon = { Icon(Icons.Default.Add, null) },
+                onClick = {
+                    viewModel.onEvent(MainEvent.StartConnection)
+                }
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { padding ->
+
+        if (state.connectedEndpoints.isNotEmpty()) {
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+
+                item {
+                    Text(
+                        "Dispositivos Conectados",
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                }
+
+                items(
+                    items = state.connectedEndpoints.toList(),
+                    key = { it }
+                ) { endpointId ->
+                    ConnectedDeviceCard(
+                        endpointId = endpointId,
+                        isStreaming = state.isStreamingAudio,
+                        isReceiving = state.isReceivingAudio,
+                        onStartStreaming = {
+                            viewModel.onEvent(
+                                MainEvent.StartStreaming(endpointId)
+                            )
+                        },
+                        onStopStreaming = {
+                            viewModel.onEvent(MainEvent.StopStreaming)
+                        },
+                        onDisconnect = {
+                            viewModel.onEvent(MainEvent.Disconnect)
+                        }
+                    )
+                }
+            }
+
+        } else {
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "No hay dispositivos conectados",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Text(
+                        "Presiona el botón + para comenzar",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+
+    // ---------- CONNECTION CONFIRMATION ----------
+    viewModel.showConnectionDialog.observeAsState().value?.let { (id, info) ->
+        OnConnectionInitiatedDialog(
+            endpointId = id,
+            info = info,
+            onDismissRequest = { viewModel.rejectConnection(id) },
+            onConfirmation = { viewModel.acceptConnection(id) }
+        )
+    }
+
+    // ---------- MODAL BOTTOM SHEET ----------
+    if (state.showBottomSheet) {
+        ModalBottomSheet(
+            onDismissRequest = {
+                viewModel.onEvent(MainEvent.CloseBottomSheet)
+            }
+        ) {
+            ModalBottom(
+                selectedIndex = state.selectedIndex,
+                discoveredDevices = state.discoveredEndpoints,
+                onIndexChange = {
+                    viewModel.onEvent(MainEvent.ChangeMode(it))
+                },
+                onDeviceClick = {
+                    viewModel.onEvent(MainEvent.Connect(it))
+                }
+            )
+        }
+    }
 }
-
-
-
 
 
 

@@ -28,6 +28,7 @@ import androidx.lifecycle.ViewModelProvider
 import com.XDurango.VoLlama.ui.theme.VoLlamaTheme
 import androidx.lifecycle.ViewModel
 import android.app.Application
+import androidx.compose.material3.MaterialTheme
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
@@ -37,7 +38,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             VoLlamaTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                   mainMenu()
+                    MainMenuScreen()
                 }
             }
         }

@@ -1,102 +1,153 @@
 package com.XDurango.VoLlama
 
+import android.Manifest
 import android.app.Application
+import androidx.annotation.RequiresPermission
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.google.android.gms.nearby.connection.ConnectionInfo
-class ViewModelApp(application: Application): AndroidViewModel(application){
-    val nearbyService = NearbyConnectionService(application)
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
+class ViewModelApp(application: Application) : AndroidViewModel(application) {
+
+    private val nearbyService = NearbyConnectionService(application)
+
+    // ---------------- UI STATE ----------------
+    private val _uiState = MutableStateFlow(MainMenuUiState())
+    val uiState = _uiState.asStateFlow()
+
+    // ---------------- ONE-SHOT EVENTS ----------------
     private val _toastMessage = MutableLiveData<String?>()
     val toastMessage: LiveData<String?> = _toastMessage
 
-    val isStreamingAudio: LiveData<Boolean> = nearbyService.isStreamingAudio
-    val isReceivingAudio: LiveData<Boolean> = nearbyService.isReceivingAudio
+    val showConnectionDialog: LiveData<Pair<String, ConnectionInfo>?> =
+        nearbyService.showConnectionDialog
 
-    // Exponer LiveData del servicio
-    val discoveredEndpoints: LiveData<MutableList<NearbyConnectionService.DiscoveredEndpoint>>
-            = nearbyService.discoveredEndpoints
-
-    val connectedEndpoints: LiveData<MutableSet<String>>
-            = nearbyService.connectedEndpoints
-
-    val showConnectionDialog: LiveData<Pair<String, ConnectionInfo>?>
-            = nearbyService.showConnectionDialog
-
-//    val receivedMessages: LiveData<NearbyConnectionService.ReceivedMessage>
-//            = nearbyService.receivedMessages
-
-    // ========== FUNCIONES PÚBLICAS ==========
-    fun startAdvertising() {
-        nearbyService.startAdvertising(
-            onSuccess = { _toastMessage.value = "Esperando conexión" },
-            onFailure = { exception -> _toastMessage.value = "error en broadcast" }
-        )
+    // ---------------- INIT ----------------
+    init {
+        observeNearby()
     }
 
-    fun stopAdvertising() {
-        nearbyService.stopAdvertising()
-        _toastMessage.value = "Broadcast terminado"
+    // ---------------- EVENT HANDLER ----------------
+    fun onEvent(event: MainEvent) {
+        when (event) {
+
+            MainEvent.StartConnection -> {
+                _uiState.update { it.copy(showBottomSheet = true) }
+                startDiscovery()
+            }
+
+            MainEvent.CloseBottomSheet -> {
+                stopDiscovery()
+                stopAdvertising()
+                _uiState.update { it.copy(showBottomSheet = false) }
+            }
+
+            is MainEvent.ChangeMode -> {
+                if (event.index == 0) {
+                    stopAdvertising()
+                    startDiscovery()
+                } else {
+                    stopDiscovery()
+                    startAdvertising()
+                }
+                _uiState.update { it.copy(selectedIndex = event.index) }
+            }
+
+            is MainEvent.Connect -> {
+                nearbyService.requestConnection(event.endpointId)
+                _toastMessage.value = "Intentando conectar..."
+            }
+
+            is MainEvent.StartStreaming -> {
+                nearbyService.startAudioStream(event.endpointId)
+            }
+
+            MainEvent.StopStreaming -> {
+                nearbyService.stopAudioStream()
+            }
+
+            MainEvent.Disconnect -> {
+                nearbyService.disconnectFromAll()
+                _toastMessage.value = "Desconectado"
+            }
+        }
     }
 
-    fun startDiscovery() {
+    // ---------------- NEARBY CONTROL ----------------
+    private fun startDiscovery() {
         nearbyService.startDiscovery(
             onSuccess = { _toastMessage.value = "Buscando dispositivos" },
-            onFailure = { exception -> _toastMessage.value = "error en busqueda" }
+            onFailure = { _toastMessage.value = "Error en búsqueda" }
         )
     }
 
-    fun stopDiscovery() {
+    private fun stopDiscovery() {
         nearbyService.stopDiscovery()
-        _toastMessage.value = "busqueda terminada"
     }
 
-    fun connectToEndpoint(endpointId: String) {
-        nearbyService.requestConnection(endpointId)
-        _toastMessage.value ="Intentando conectar a dispositivo"
+    private fun startAdvertising() {
+        nearbyService.startAdvertising(
+            onSuccess = { _toastMessage.value = "Esperando conexión" },
+            onFailure = { _toastMessage.value = "Error en advertising" }
+        )
     }
 
+    private fun stopAdvertising() {
+        nearbyService.stopAdvertising()
+    }
+
+    // ---------------- STATE SYNC ----------------
+    private fun observeNearby() {
+
+        nearbyService.discoveredEndpoints.observeForever {
+            _uiState.update { state ->
+                state.copy(discoveredEndpoints = it)
+            }
+        }
+
+        nearbyService.connectedEndpoints.observeForever {
+            _uiState.update { state ->
+                state.copy(connectedEndpoints = it)
+            }
+        }
+
+        nearbyService.isStreamingAudio.observeForever {
+            _uiState.update { state ->
+                state.copy(isStreamingAudio = it)
+            }
+        }
+
+        nearbyService.isReceivingAudio.observeForever {
+            _uiState.update { state ->
+                state.copy(isReceivingAudio = it)
+            }
+        }
+
+        nearbyService.nearbyMode.observeForever {
+            _uiState.update { state ->
+                state.copy(nearbyStatus = it)
+            }
+        }
+    }
+
+    // ---------------- DIALOG ACTIONS ----------------
     fun acceptConnection(endpointId: String) {
         nearbyService.acceptConnection(endpointId)
-        _toastMessage.value = "conexion aceptada"
     }
 
     fun rejectConnection(endpointId: String) {
         nearbyService.rejectConnection(endpointId)
-        _toastMessage.value = "conexion rechazada"
     }
 
-    fun startVoiceStreaming(endpointId: String) {
-        nearbyService.startAudioStream(endpointId)
+    fun resetNearbyStatus() {
+        nearbyService.resetStatus()
     }
 
-//    fun startVoiceStreamingToAll() {
-//        nearbyService.startAudioStreamToAll()
-//    }
-
-    fun stopVoiceStreaming() {
-        nearbyService.stopAudioStream()
-    }
-
-    fun stopReceivingAudio() {
-        nearbyService.stopAudioPlayback()
-    }
-
-//    fun sendMessage(endpointId: String, message: String) {
-//        nearbyService.sendMessage(endpointId, message)
-//    }
-
-//    fun sendMessageToAll(message: String) {
-//        nearbyService.sendMessageToAll(message)
-//    }
-
-    fun disconnectAll() {
-        nearbyService.disconnectFromAll()
-        _toastMessage.value = "terminando servicio - cerrando conexiones"
-    }
-
-    fun clearToastMessage(){
+    fun clearToastMessage() {
         _toastMessage.value = null
     }
 
@@ -104,5 +155,4 @@ class ViewModelApp(application: Application): AndroidViewModel(application){
         super.onCleared()
         nearbyService.cleanup()
     }
-
 }

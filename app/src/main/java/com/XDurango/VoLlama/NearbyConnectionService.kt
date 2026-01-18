@@ -1,5 +1,6 @@
 package com.XDurango.VoLlama
 
+import android.Manifest
 import android.os.Build
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -25,11 +26,22 @@ import android.media.AudioFormat
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import android.media.MediaRecorder
+import androidx.annotation.RequiresPermission
 import java.io.InputStream
 
 class NearbyConnectionService (private val context: Context) {
+    enum class NearbyStatus{
+        IDLE,
+        DISCOVERING,
+        ADVERTISING,
+        REJECTED,
+        CONNECTION_ERROR,
+        CONNECTION_SUCESS
+    }
 
     // LiveData para mensajes recibidos
+    private val _nearbyStatus = MutableLiveData(NearbyStatus.IDLE)
+    val nearbyMode: LiveData<NearbyStatus> = _nearbyStatus
     private val _receivedMessages = MutableLiveData<ReceivedMessage>()
     val receivedMessages: LiveData<ReceivedMessage> = _receivedMessages
     private val _connectedEnpoints = MutableLiveData<MutableSet<String>>(mutableSetOf())
@@ -91,6 +103,7 @@ class NearbyConnectionService (private val context: Context) {
                 advertisingOptions
             ).addOnSuccessListener {
                 //estamos disponibles para conectar!
+                _nearbyStatus.value = NearbyStatus.ADVERTISING
                 onSuccess()
 
             }.addOnFailureListener {
@@ -115,6 +128,7 @@ class NearbyConnectionService (private val context: Context) {
             )
             .addOnSuccessListener {
                 //estamos descubriendo dispositivos disponibles!!
+                _nearbyStatus.value = NearbyStatus.DISCOVERING
                 onSuccess()
             }
             .addOnFailureListener {
@@ -135,7 +149,7 @@ class NearbyConnectionService (private val context: Context) {
 
     fun acceptConnection(endpointId: String) {
         connectionsClient.acceptConnection(endpointId, payloadCallback)
-            .addOnSuccessListener { _showConnectionDialog.postValue(null) }
+            .addOnSuccessListener {  }
             .addOnFailureListener { exception -> _showConnectionDialog.postValue(null) }
 
     }
@@ -163,6 +177,7 @@ class NearbyConnectionService (private val context: Context) {
     }
 
     // Iniciar streaming de audio a un endpoint específico
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startAudioStream(endpointId: String) {
         try {
             // Crear stream de salida
@@ -187,6 +202,7 @@ class NearbyConnectionService (private val context: Context) {
     }
 
     // Capturar audio del micrófono y escribir al stream
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startAudioCapture(outputStream: OutputStream) {
         if (isRecording) return
 
@@ -336,15 +352,19 @@ class NearbyConnectionService (private val context: Context) {
             when (result.status.statusCode) {
                 ConnectionsStatusCodes.STATUS_OK -> {
                     //"Conexion Exitosa!"
+                    _nearbyStatus.value = NearbyStatus.CONNECTION_SUCESS
                     _connectedEnpoints.value?.add(endpointId)
                     _connectedEnpoints.postValue(_connectedEnpoints.value)
                 }
 
                 ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED ->
-                    TODO("Conexion Rechazada")
+                    _nearbyStatus.value = NearbyStatus.REJECTED
+
+
 
                 ConnectionsStatusCodes.STATUS_ERROR ->
-                    TODO("hubo un error al intentar conectarse!")
+                    _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
+
             }
         }
 
@@ -449,5 +469,8 @@ class NearbyConnectionService (private val context: Context) {
         stopAudioStream()
         stopAudioPlayback()
         disconnectFromAll()
+    }
+    fun resetStatus(){
+        _nearbyStatus.value = NearbyStatus.IDLE
     }
 }
