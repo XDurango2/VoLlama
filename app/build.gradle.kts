@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("com.google.dagger.hilt.android")
+    id("com.google.devtools.ksp") // Para Hilt
 }
 
 android {
@@ -43,10 +45,14 @@ android {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
-    implementation("androidx.compose.runtime:runtime-livedata:1.10.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    implementation("com.google.dagger:hilt-android:2.59")
+    ksp("com.google.dagger:hilt-android-compiler:2.59")
+    implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.runtime:runtime-livedata:1.10.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation ("com.google.code.gson:gson:2.13.2")
-    implementation("com.google.android.gms:play-services-nearby:18.5.0")
+    implementation("com.google.android.gms:play-services-nearby:19.3.0")
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

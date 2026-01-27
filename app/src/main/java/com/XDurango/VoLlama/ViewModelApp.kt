@@ -1,17 +1,22 @@
 package com.XDurango.VoLlama
 
+import android.Manifest
 import android.app.Application
+import androidx.annotation.RequiresPermission
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.google.android.gms.nearby.connection.ConnectionInfo
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import javax.inject.Inject
 
-class ViewModelApp(application: Application) : AndroidViewModel(application) {
 
-    private val nearbyService = NearbyConnectionService(application)
+@HiltViewModel
+class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnectionService,application: Application) : AndroidViewModel(application) {
+
 
     // ---------------- UI STATE ----------------
     private val _uiState = MutableStateFlow(MainMenuUiState())
@@ -30,6 +35,7 @@ class ViewModelApp(application: Application) : AndroidViewModel(application) {
     }
 
     // ---------------- EVENT HANDLER ----------------
+   // @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun onEvent(event: MainEvent) {
         when (event) {
 
@@ -61,14 +67,11 @@ class ViewModelApp(application: Application) : AndroidViewModel(application) {
                 nearbyService.requestConnection(event.endpointId)
                 _toastMessage.value = "Intentando conectar..."
             }
-
-            is MainEvent.StartStreaming -> {
-                nearbyService.startAudioStream(event.endpointId)
+            is MainEvent.RestartConnection -> {
+                restartConnection()
             }
 
-            MainEvent.StopStreaming -> {
-                nearbyService.stopAudioStream()
-            }
+
 
             MainEvent.Disconnect -> {
                 nearbyService.disconnectFromAll()
@@ -78,6 +81,12 @@ class ViewModelApp(application: Application) : AndroidViewModel(application) {
     }
 
     // ---------------- NEARBY CONTROL ----------------
+
+    private fun restartConnection(){
+        nearbyService.cleanup()
+        startDiscovery()
+    }
+
     private fun startDiscovery() {
         nearbyService.startDiscovery(
             onSuccess = { _toastMessage.value = "Buscando dispositivos" },
@@ -115,18 +124,6 @@ class ViewModelApp(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        nearbyService.isStreamingAudio.observeForever {
-            _uiState.update { state ->
-                state.copy(isStreamingAudio = it)
-            }
-        }
-
-        nearbyService.isReceivingAudio.observeForever {
-            _uiState.update { state ->
-                state.copy(isReceivingAudio = it)
-            }
-        }
-
         nearbyService.nearbyMode.observeForever {
             _uiState.update { state ->
                 state.copy(nearbyStatus = it)
@@ -140,6 +137,7 @@ class ViewModelApp(application: Application) : AndroidViewModel(application) {
     // ---------------- DIALOG ACTIONS ----------------
     fun acceptConnection(endpointId: String) {
         nearbyService.acceptConnection(endpointId)
+
     }
 
     fun rejectConnection(endpointId: String) {

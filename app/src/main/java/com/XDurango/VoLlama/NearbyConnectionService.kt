@@ -18,333 +18,206 @@ import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
 import android.content.Context
-import kotlin.collections.mutableSetOf
-import android.media.AudioRecord
-import android.media.AudioTrack
-import java.io.OutputStream
-import android.media.AudioFormat
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
-import android.media.MediaRecorder
-import androidx.annotation.RequiresPermission
-import java.io.InputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
-class NearbyConnectionService (private val context: Context) {
-    enum class NearbyStatus{
+class NearbyConnectionService(private val context: Context) {
+
+    // Crear un CoroutineScope para operaciones asíncronas
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    enum class NearbyStatus {
         IDLE,
         DISCOVERING,
         ADVERTISING,
         IN_PROGRESS,
         REJECTED,
         CONNECTION_ERROR,
-        CONNECTION_SUCESS
+        CONNECTION_SUCCESS
     }
 
-    // LiveData para mensajes recibidos
+    // LiveData
     private val _nearbyStatus = MutableLiveData(NearbyStatus.IDLE)
     val nearbyMode: LiveData<NearbyStatus> = _nearbyStatus
+
     private val _receivedMessages = MutableLiveData<ReceivedMessage>()
     val receivedMessages: LiveData<ReceivedMessage> = _receivedMessages
-    private val _connectedEnpoints = MutableLiveData<MutableSet<String>>(mutableSetOf())
-    val connectedEndpoints : LiveData<MutableSet<String>> = _connectedEnpoints
-    // LiveData para dispositivos descubiertos
+
+    private val _connectedEndpoints = MutableLiveData<MutableSet<Pair<String, ConnectionInfo>>>(mutableSetOf())
+    val connectedEndpoints: LiveData<MutableSet<Pair<String, ConnectionInfo>>> = _connectedEndpoints
+
     private val _discoveredEndpoints = MutableLiveData<MutableList<DiscoveredEndpoint>>(mutableListOf())
     val discoveredEndpoints: LiveData<MutableList<DiscoveredEndpoint>> = _discoveredEndpoints
+
     private val _showConnectionDialog = MutableLiveData<Pair<String, ConnectionInfo>?>()
     val showConnectionDialog: LiveData<Pair<String, ConnectionInfo>?> = _showConnectionDialog
-    val SERVICE_ID = "com.XDurango.VoLlama"
-
-    private var audioRecord: AudioRecord? = null
-    private var audioTrack: AudioTrack? = null
-    private var isRecording = false
-    private var isPlaying = false
-    private var streamOutputs = mutableMapOf<String, OutputStream>()
-
-    // LiveData para estado de streaming
-    private val _isStreamingAudio = MutableLiveData(false)
-    val isStreamingAudio: LiveData<Boolean> = _isStreamingAudio
-
-    private val _isReceivingAudio = MutableLiveData(false)
-    val isReceivingAudio: LiveData<Boolean> = _isReceivingAudio
 
     companion object {
         const val SERVICE_ID = "com.XDurango.VoLlama"
-
-        // Configuración de audio
-        const val SAMPLE_RATE = 44100
-        const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
-        const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        val BUFFER_SIZE :Int by lazy{
-            val size=AudioRecord.getMinBufferSize(
-            SAMPLE_RATE,
-            CHANNEL_CONFIG,
-            AUDIO_FORMAT
-        )
-            if (size <= 0) SAMPLE_RATE * 2 else size
-        }
     }
 
     val endpoint = "${Build.MANUFACTURER} - ${Build.MODEL}"
+
     val connectionsClient by lazy {
         Nearby.getConnectionsClient(context)
     }
 
+    // Referencia opcional al CallManager para manejar streams de audio
+    private var callManager: CallManager? = null // Cambiaremos el tipo después
+
+    fun setCallManager(manager: CallManager) {
+        this.callManager = manager
+    }
+
     fun startAdvertising(
-        onSuccess:() -> Unit ={},
-        onFailure:(Exception) -> Unit = {},
+        onSuccess: () -> Unit = {},
+        onFailure: (Exception) -> Unit = {},
     ) {
-        val advertisingOptions = AdvertisingOptions.Builder()
-            .setStrategy(Strategy.P2P_STAR)
-            .build()
-        connectionsClient
-            .startAdvertising(
-                endpoint,
-                SERVICE_ID,
-                connectionLifecycleCallback,
-                advertisingOptions
-            ).addOnSuccessListener {
-                //estamos disponibles para conectar!
-                _nearbyStatus.value = NearbyStatus.ADVERTISING
-                onSuccess()
+        serviceScope.launch {
+            try {
+                val advertisingOptions = AdvertisingOptions.Builder()
+                    .setStrategy(Strategy.P2P_STAR)
+                    .build()
 
-            }.addOnFailureListener {
-                //no podemos iniciar
-                onFailure(it)
+                connectionsClient
+                    .startAdvertising(
+                        endpoint,
+                        SERVICE_ID,
+                        connectionLifecycleCallback,
+                        advertisingOptions
+                    )
+                    .addOnSuccessListener {
+                        _nearbyStatus.postValue(NearbyStatus.ADVERTISING)
+                        onSuccess()
+                    }
+                    .addOnFailureListener {
+                        onFailure(it)
+                    }
+            } catch (e: Exception) {
+                onFailure(e)
             }
-
+        }
     }
 
     fun startDiscovery(
         onSuccess: () -> Unit,
         onFailure: (Exception) -> Unit
     ) {
-        val discoveryOptions = DiscoveryOptions.Builder()
-            .setStrategy(Strategy.P2P_STAR)
-            .build()
-       connectionsClient
-            .startDiscovery(
-                SERVICE_ID,
-                endpointDiscoveryCallback,
-                discoveryOptions
-            )
-            .addOnSuccessListener {
-                //estamos descubriendo dispositivos disponibles!!
-                _nearbyStatus.value = NearbyStatus.DISCOVERING
-                onSuccess()
+        serviceScope.launch {
+            try {
+                val discoveryOptions = DiscoveryOptions.Builder()
+                    .setStrategy(Strategy.P2P_STAR)
+                    .build()
+
+                connectionsClient
+                    .startDiscovery(
+                        SERVICE_ID,
+                        endpointDiscoveryCallback,
+                        discoveryOptions
+                    )
+                    .addOnSuccessListener {
+                        _nearbyStatus.postValue(NearbyStatus.DISCOVERING)
+                        onSuccess()
+                    }
+                    .addOnFailureListener {
+                        onFailure(it)
+                    }
+            } catch (e: Exception) {
+                onFailure(e)
             }
-            .addOnFailureListener {
-                // no podemos iniciar
-                onFailure(it)
-            }
+        }
     }
 
     fun stopDiscovery() {
-       connectionsClient
-            .stopDiscovery()
-    }
-
-    fun stopAdvertising() {
-       connectionsClient
-            .stopAdvertising()
-    }
-
-    fun acceptConnection(endpointId: String) {
-        connectionsClient.acceptConnection(endpointId, payloadCallback)
-            .addOnSuccessListener {  }
-            .addOnFailureListener { exception -> _showConnectionDialog.postValue(null) }
-
-    }
-
-    fun rejectConnection(endpointId: String) {
-        connectionsClient.rejectConnection(endpointId)
-        _showConnectionDialog.postValue(null)
-    }
-
-    fun requestConnection(endpointId: String) {
-        connectionsClient
-            .requestConnection(endpoint, endpointId, connectionLifecycleCallback)
-            .addOnSuccessListener { }
-            .addOnFailureListener { exception -> _showConnectionDialog.postValue(null) }
-    }
-
-    fun disconnectFrom(endpointId: String){
-        connectionsClient.disconnectFromEndpoint(endpointId)
-    }
-
-    fun disconnectFromAll(){
-        connectionsClient.stopAllEndpoints()
-        _connectedEnpoints.postValue(mutableSetOf())
-        _discoveredEndpoints.postValue(mutableListOf())
-    }
-
-    // Iniciar streaming de audio a un endpoint específico
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    fun startAudioStream(endpointId: String) {
-        try {
-            // Crear stream de salida
-            val pipedOutputStream = PipedOutputStream()
-            val pipedInputStream = PipedInputStream(pipedOutputStream)
-
-            // Guardar el stream
-            streamOutputs[endpointId] = pipedOutputStream
-
-            // Enviar el stream como Payload
-            val payload = Payload.fromStream(pipedInputStream)
-            connectionsClient.sendPayload(endpointId, payload)
-
-            // Iniciar captura de audio
-            startAudioCapture(pipedOutputStream)
-
-            _isStreamingAudio.postValue(true)
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    // Capturar audio del micrófono y escribir al stream
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    fun startAudioCapture(outputStream: OutputStream) {
-        if (isRecording) return
-
-        try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                SAMPLE_RATE,
-                CHANNEL_CONFIG,
-                AUDIO_FORMAT,
-                BUFFER_SIZE * 4
-            )
-
-            audioRecord?.startRecording()
-            isRecording = true
-
-            // Thread para capturar y enviar audio
-            Thread {
-                val buffer = ByteArray(BUFFER_SIZE)
-
-                while (isRecording) {
-                    val readBytes = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-
-                    if (readBytes > 0) {
-                        try {
-                            outputStream.write(buffer, 0, readBytes)
-                            outputStream.flush()
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            break
-                        }
-                    }
-                }
-
-                try {
-                    outputStream.close()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }.start()
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    // Detener streaming de audio
-    fun stopAudioStream() {
-        isRecording = false
-        _isStreamingAudio.postValue(false)
-
-        audioRecord?.apply {
-            stop()
-            release()
-        }
-        audioRecord = null
-
-        // Cerrar todos los streams
-        streamOutputs.values.forEach { outputStream ->
+        serviceScope.launch {
             try {
-                outputStream.close()
+                connectionsClient.stopDiscovery()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
-        streamOutputs.clear()
     }
 
-    // Reproducir audio recibido del stream
-    private fun startAudioPlayback(inputStream: InputStream) {
-        if (isPlaying) return
+    fun stopAdvertising() {
+        serviceScope.launch {
+            try {
+                connectionsClient.stopAdvertising()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
-        try {
-            val bufferSize = AudioTrack.getMinBufferSize(
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AUDIO_FORMAT
-            )
-
-            audioTrack = AudioTrack(
-                android.media.AudioManager.STREAM_MUSIC,
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AUDIO_FORMAT,
-                bufferSize,
-                AudioTrack.MODE_STREAM
-            )
-
-            audioTrack?.play()
-            isPlaying = true
-            _isReceivingAudio.postValue(true)
-
-            // Thread para leer y reproducir audio
-            Thread {
-                val buffer = ByteArray(BUFFER_SIZE)
-
-                while (isPlaying) {
-                    try {
-                        val readBytes = inputStream.read(buffer)
-
-                        if (readBytes > 0) {
-                            audioTrack?.write(buffer, 0, readBytes)
-                        } else if (readBytes == -1) {
-                            // Stream terminado
-                            break
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        break
+    fun acceptConnection(endpointId: String) {
+        serviceScope.launch {
+            try {
+                connectionsClient.acceptConnection(endpointId, payloadCallback)
+                    .addOnSuccessListener { }
+                    .addOnFailureListener { exception ->
+                        _showConnectionDialog.postValue(null)
                     }
-                }
-
-                stopAudioPlayback()
-
-                try {
-                    inputStream.close()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }.start()
-
-        } catch (e: Exception) {
-            e.printStackTrace()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
-    // Detener reproducción de audio
-    fun stopAudioPlayback() {
-        isPlaying = false
-        _isReceivingAudio.postValue(false)
-
-        audioTrack?.apply {
-            stop()
-            release()
+    fun rejectConnection(endpointId: String) {
+        serviceScope.launch {
+            try {
+                connectionsClient.rejectConnection(endpointId)
+                _showConnectionDialog.postValue(null)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
-        audioTrack = null
+    }
+
+    fun requestConnection(endpointId: String) {
+        serviceScope.launch {
+            try {
+                connectionsClient
+                    .requestConnection(endpoint, endpointId, connectionLifecycleCallback)
+                    .addOnSuccessListener { }
+                    .addOnFailureListener { exception ->
+                        _showConnectionDialog.postValue(null)
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun disconnectFrom(endpointId: String) {
+        serviceScope.launch {
+            try {
+                connectionsClient.disconnectFromEndpoint(endpointId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun disconnectFromAll() {
+        serviceScope.launch {
+            try {
+                connectionsClient.stopAllEndpoints()
+                _connectedEndpoints.postValue(mutableSetOf())
+                _discoveredEndpoints.postValue(mutableListOf())
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
-            _nearbyStatus.value = NearbyStatus.IN_PROGRESS
-            _showConnectionDialog.postValue(endpointId to connectionInfo)        }
+            _nearbyStatus.postValue(NearbyStatus.IN_PROGRESS)
+            _showConnectionDialog.postValue(endpointId to connectionInfo)
+        }
 
         override fun onConnectionResult(
             endpointId: String,
@@ -352,66 +225,76 @@ class NearbyConnectionService (private val context: Context) {
         ) {
             when (result.status.statusCode) {
                 ConnectionsStatusCodes.STATUS_OK -> {
-                    //"Conexion Exitosa!"
-                    _nearbyStatus.value = NearbyStatus.CONNECTION_SUCESS
-                    val updated = _connectedEnpoints.value.orEmpty().toMutableSet()
-                    updated.add(endpointId)
-                    _connectedEnpoints.postValue(updated)
+                    _nearbyStatus.postValue(NearbyStatus.CONNECTION_SUCCESS)
+                    val updated = _connectedEndpoints.value.orEmpty().toMutableSet()
+                    val connectionInfo = _showConnectionDialog.value?.second
+                    if (connectionInfo != null) {
+                        updated.add(endpointId to connectionInfo)
+                    }
+                    _connectedEndpoints.postValue(updated)
                     stopDiscovery()
                     stopAdvertising()
                 }
 
-                ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED ->
-                    _nearbyStatus.value = NearbyStatus.REJECTED
+                ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
+                    _nearbyStatus.postValue(NearbyStatus.REJECTED)
+                }
 
-
-
-                ConnectionsStatusCodes.STATUS_ERROR ->
-                    _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
-
+                ConnectionsStatusCodes.STATUS_ERROR -> {
+                    _nearbyStatus.postValue(NearbyStatus.CONNECTION_ERROR)
+                }
             }
         }
 
         override fun onDisconnected(endpointId: String) {
-            // Desconectados de este endpoint
-            // No se pueden enviar o recibir más datos
-        }
+            val updated = _connectedEndpoints.value.orEmpty().toMutableSet()
+            updated.removeIf { it.first == endpointId }
+            _connectedEndpoints.postValue(updated)
 
+            if (updated.isEmpty()) {
+                _nearbyStatus.postValue(NearbyStatus.IDLE)
+            }
+        }
     }
 
-    //  Defines el PayloadCallback (cómo manejar datos)
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            // Aquí recibes los datos que te envían
-            when (payload.type) {
-                Payload.Type.BYTES -> {
-                    val receivedBytes = payload.asBytes()
-                    val message = receivedBytes?.let { String(it) }
-                    message?.let {
-                        _receivedMessages.postValue(
-                            ReceivedMessage(endpointId, it)
-                        )
-                    }
-                }
+            serviceScope.launch {
+                try {
+                    when (payload.type) {
+                        Payload.Type.BYTES -> {
+                            val receivedBytes = payload.asBytes()
+                            val message = receivedBytes?.let { String(it) }
+                            message?.let {
+                                _receivedMessages.postValue(
+                                    ReceivedMessage(endpointId, it)
+                                )
+                            }
+                        }
 
-                Payload.Type.FILE -> {
-                    val receivedFile = payload.asFile()
-                    // Procesar archivo recibido
-                }
+                        Payload.Type.FILE -> {
+                            // Procesar archivo recibido si es necesario
+                        }
 
-                Payload.Type.STREAM -> {
-                    val receivedStream = payload.asStream()?.asInputStream()
-                    // Procesar stream recibido
-                    receivedStream?.let {
-                        startAudioPlayback(it)
+                        Payload.Type.STREAM -> {
+                            val receivedStream = payload.asStream()?.asInputStream()
+                            receivedStream?.let { stream ->
+                                // Delegar al CallManager si está disponible
+                                (callManager as? CallManager)?.let { manager ->
+                                    serviceScope.launch {
+                                        manager.startAudioPlayback(stream)
+                                    }
+                                }
+                            }
+                        }
                     }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
         }
 
-
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // Aquí recibes actualizaciones del progreso de transferencia
             when (update.status) {
                 PayloadTransferUpdate.Status.SUCCESS -> {
                     // Transferencia completada
@@ -419,10 +302,6 @@ class NearbyConnectionService (private val context: Context) {
 
                 PayloadTransferUpdate.Status.FAILURE -> {
                     // Transferencia falló
-                    if(update.payloadId !=0L){
-                        stopAudioStream()
-                        stopAudioPlayback()
-                    }
                 }
 
                 PayloadTransferUpdate.Status.IN_PROGRESS -> {
@@ -435,15 +314,15 @@ class NearbyConnectionService (private val context: Context) {
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            val enpointAvaliable = DiscoveredEndpoint(
+            val endpointAvailable = DiscoveredEndpoint(
                 endpointId = endpointId,
                 name = info.endpointName,
                 serviceId = info.serviceId,
-                fullInfo =  info
+                fullInfo = info
             )
             val currentList = _discoveredEndpoints.value ?: mutableListOf()
-            if (currentList.none { it.endpointId == endpointId }) {//evita duplicados
-                currentList.add(enpointAvaliable)
+            if (currentList.none { it.endpointId == endpointId }) {
+                currentList.add(endpointAvailable)
                 _discoveredEndpoints.postValue(currentList)
             }
         }
@@ -468,13 +347,18 @@ class NearbyConnectionService (private val context: Context) {
         val timestamp: Long = System.currentTimeMillis()
     )
 
-    // Limpiar recursos
     fun cleanup() {
-        stopAudioStream()
-        stopAudioPlayback()
-        disconnectFromAll()
+        serviceScope.launch {
+            try {
+                disconnectFromAll()
+                serviceScope.cancel() // Cancelar todas las coroutines
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
-    fun resetStatus(){
-        _nearbyStatus.value = NearbyStatus.IDLE
+
+    fun resetStatus() {
+        _nearbyStatus.postValue(NearbyStatus.IDLE)
     }
 }

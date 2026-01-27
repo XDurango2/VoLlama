@@ -50,7 +50,7 @@
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"
         tools:targetApi="34"/>
-
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- ==================== CARACTERÍSTICAS DE HARDWARE ==================== -->
     <uses-feature android:name="android.hardware.microphone" android:required="true"/>
@@ -61,6 +61,7 @@
 
 
     <application
+        android:name=".Vollama"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -81,22 +82,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- Servicio para manejar llamadas en background -->
-        <service
-            android:name=".CallService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="phoneCall"
-            tools:targetApi="29"/>
 
-        <service
-            android:name=".VoIPConnectionService"
-            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.telecom.ConnectionService"/>
-            </intent-filter>
-        </service>
+        <activity
+            android:name=".CallModeActivity"
+            android:exported="false"
+            android:theme="@style/Theme.VoLlama"
+            />
+
+        <activity android:name=".WalkieTalkieActivity"
+            android:exported="false"
+            android:theme="@style/Theme.VoLlama"
+            />
 
 
     </application>

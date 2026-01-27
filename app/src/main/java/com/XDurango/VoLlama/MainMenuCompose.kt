@@ -33,7 +33,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.ui.text.style.TextAlign
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.lazy.items
@@ -42,7 +41,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ButtonDefaults
-import android.util.Log
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.text.font.FontWeight
@@ -60,9 +58,16 @@ import androidx.activity.compose.ManagedActivityResultLauncher
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.ConnectWithoutContact
+import androidx.compose.material.icons.outlined.Phone
 import androidx.compose.ui.platform.LocalContext
-
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.material3.AlertDialogDefaults.containerColor
+import androidx.compose.material3.ButtonColors
+import androidx.compose.ui.graphics.Color
 
 @Composable
 fun OnConnectionInitiatedDialog(
@@ -151,11 +156,10 @@ fun DiscoveredDeviceCard(
 
 @Composable
 fun ConnectedDeviceCard(
+    endpointName: String,
     endpointId: String,
-    isStreaming: Boolean,
-    isReceiving: Boolean,
-    onStartStreaming: () -> Unit,
-    onStopStreaming: () -> Unit,
+    onCallMode: () -> Unit,
+    onWalkieTalkieMode: () -> Unit,
     onDisconnect: () -> Unit
 ) {
     ElevatedCard(
@@ -181,51 +185,44 @@ fun ConnectedDeviceCard(
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        endpointId,
-                        style = MaterialTheme.typography.titleMedium
+                        endpointName,
+                        style = MaterialTheme.typography.bodyMedium
                     )
+                    Text(
+                        "endpointId: $endpointId",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+
+
                 }
 
-                IconButton(onClick = onDisconnect) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Desconectar"
-                    )
+                IconButton(onClick = onWalkieTalkieMode) {
+                    Icon(Icons.Outlined.ConnectWithoutContact, contentDescription = "Modo Walkie-Talkie")
+
                 }
+                IconButton(onClick = onCallMode) {
+                    Icon(Icons.Outlined.Phone, contentDescription = "Modo llamada")
+                }
+//                IconButton(onClick = onDisconnect) {
+//                    Icon(
+//                        imageVector = Icons.Default.Close,
+//                        contentDescription = "Desconectar"
+//                    )
+//                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
             Button(
-                onClick = if (isStreaming) onStopStreaming else onStartStreaming,
-                modifier = Modifier.fillMaxWidth(),
-                colors = if (isStreaming) {
-                    ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    )
-                } else ButtonDefaults.buttonColors()
+                onClick = onDisconnect,
+                modifier = Modifier.fillMaxWidth()
+
             ) {
-                Text(if (isStreaming) "Detener Audio" else "Hablar")
+                Text("Desconectar")
             }
 
-            if (isReceiving) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        "Recibiendo audio...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
+
         }
     }
 }
@@ -236,16 +233,11 @@ fun ModalBottom(selectedIndex: Int,
                 endpointName:String,
                 onIndexChange: (Int) -> Unit,
                 discoveredDevices: List<NearbyConnectionService.DiscoveredEndpoint>,
-                onDeviceClick: (String) -> Unit){
+                onDeviceClick: (String) -> Unit,
+                onRefreshButton: ()-> Unit){
     val options = listOf("Quiero conectarme!", "Espero una conexión")
     val deviceCount = discoveredDevices.size
-    // 🔍 DEBUG: Log cada recomposición
-    LaunchedEffect(deviceCount) {
-        Log.d("ModalBottom", "🎨 Recomposed! Device count: $deviceCount")
-        discoveredDevices.forEach {
-            Log.d("ModalBottom", "  📱 ${it.name} - ${it.endpointId}")
-        }
-    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -283,18 +275,25 @@ fun ModalBottom(selectedIndex: Int,
         when (selectedIndex) {
             0 -> {
                 // Modo Discovery
-                Text(
-                    text = "Dispositivos disponibles ($deviceCount)",
-                    style = MaterialTheme.typography.titleMedium
-                )
+
                 Spacer(modifier = Modifier.height(12.dp))
+                Row(modifier = Modifier.fillMaxWidth(),verticalAlignment = Alignment.Top) {
+                    Text(
+                        text = "Dispositivos disponibles ($deviceCount)",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
+                    Spacer(modifier = Modifier.weight(1f))
+                    IconButton(onClick = onRefreshButton) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Reiniciar Búsqueda")
+                    }
+                }
                 Text(
                     text = "apareces como $endpointName",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-
 
                 if (discoveredDevices.isEmpty()) {
                     Column(
@@ -410,7 +409,7 @@ private fun rememberNearbyPermissions(): Array<String> {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainMenuScreen(
-    viewModel: ViewModelApp = viewModel()
+    viewModel: ViewModelApp = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
 
@@ -485,19 +484,20 @@ fun MainMenuScreen(
 
                 items(
                     items = state.connectedEndpoints.toList(),
-                    key = { it }
-                ) { endpointId ->
+                    key = { it.first }
+                ) { pair ->
                     ConnectedDeviceCard(
-                        endpointId = endpointId,
-                        isStreaming = state.isStreamingAudio,
-                        isReceiving = state.isReceivingAudio,
-                        onStartStreaming = {
-                            viewModel.onEvent(
-                                MainEvent.StartStreaming(endpointId)
-                            )
+                        endpointName =pair.second.endpointName, //obtener el nombre del connected device
+                        endpointId = pair.first,
+                        onCallMode = {
+                            val intent = Intent(context, CallModeActivity::class.java).apply {
+                                putExtra("ENDPOINT_ID",pair.first)
+                                putExtra("ENDPOINT_NAME", pair.second.endpointName)
+                            }
+                            context.startActivity(intent)
                         },
-                        onStopStreaming = {
-                            viewModel.onEvent(MainEvent.StopStreaming)
+                        onWalkieTalkieMode = {
+
                         },
                         onDisconnect = {
                             viewModel.onEvent(MainEvent.Disconnect)
@@ -553,7 +553,8 @@ fun MainMenuScreen(
                 endpointName = state.endpointName,
                 onDeviceClick = {
                     viewModel.onEvent(MainEvent.Connect(it))
-                }
+                },
+                onRefreshButton ={viewModel.onEvent(MainEvent.RestartConnection)}
             )
         }
     }
