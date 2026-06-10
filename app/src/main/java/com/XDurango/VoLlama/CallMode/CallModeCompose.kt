@@ -63,22 +63,29 @@ class CallModeActivity : ComponentActivity() {
             VoLlamaTheme {
                 val endpointId = intent.getStringExtra("ENDPOINT_ID") ?: ""
                 val endpointName = intent.getStringExtra("ENDPOINT_NAME") ?: ""
+                val isIncoming = intent.getBooleanExtra("IS_INCOMING", false)
                 val viewModel: CallManager = hiltViewModel()
                 val callState by viewModel.callState.collectAsState()
 
                 LaunchedEffect(callState) {
                     if (callState == CallState.ENDED) {
+                        stopService(Intent(this@CallModeActivity, CallAudioService::class.java))
                         delay(500)
                         finish()
                     }
                 }
 
                 LaunchedEffect(Unit) {
+                    startService(Intent(this@CallModeActivity, CallAudioService::class.java))
                     withContext(Dispatchers.IO) {
                         nearbyService.setCallManager(viewModel)
                     }
                     viewModel.initialize(endpointId, endpointName)
-                    viewModel.onCallEvent(CallEvent.StartCall)
+                    if (isIncoming) {
+                        viewModel.onCallEvent(CallEvent.AnswerCall)
+                    } else {
+                        viewModel.onCallEvent(CallEvent.StartCall)
+                    }
                 }
 
                 CallScreen(

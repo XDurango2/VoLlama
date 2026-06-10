@@ -67,6 +67,7 @@ class NearbyConnectionService(private val context: Context) {
 
     private var callManager: CallManager? = null
     private var pendingIncomingStream: InputStream? = null
+    private val pendingConnectionInfo = mutableMapOf<String, ConnectionInfo>()
 
     // ── Coordinator ───────────────────────────────────────────────────────────
 
@@ -136,6 +137,7 @@ class NearbyConnectionService(private val context: Context) {
             e.printStackTrace()
         } finally {
             _showConnectionDialog.value = null
+            pendingConnectionInfo.remove(endpointId)
             try { pendingIncomingStream?.close() } catch (_: Exception) {}
             pendingIncomingStream = null
         }
@@ -165,6 +167,18 @@ class NearbyConnectionService(private val context: Context) {
         pendingIncomingStream = null
     }
 
+    fun disconnectFromEndpoint(endpointId: String) {
+        try {
+            connectionsClient.disconnectFromEndpoint(endpointId)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            _connectedEndpoints.update { it.filterNot { ep -> ep.first == endpointId }.toSet() }
+            pendingConnectionInfo.remove(endpointId)
+            if (_connectedEndpoints.value.isEmpty()) _nearbyStatus.value = NearbyStatus.IDLE
+        }
+    }
+
     fun disconnectFromAll() {
         try {
             connectionsClient.stopAllEndpoints()
@@ -173,6 +187,7 @@ class NearbyConnectionService(private val context: Context) {
         } finally {
             _connectedEndpoints.value = emptySet()
             _discoveredEndpoints.value = emptyList()
+            pendingConnectionInfo.clear()
             clearIncomingCallSignal()
         }
     }
@@ -185,6 +200,7 @@ class NearbyConnectionService(private val context: Context) {
     private val discoveryConnectionCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             _nearbyStatus.value = NearbyStatus.IN_PROGRESS
+            pendingConnectionInfo[endpointId] = connectionInfo
             acceptConnection(endpointId)
         }
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
@@ -199,6 +215,7 @@ class NearbyConnectionService(private val context: Context) {
     private val advertisingConnectionCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             _nearbyStatus.value = NearbyStatus.IN_PROGRESS
+            pendingConnectionInfo[endpointId] = connectionInfo
             _showConnectionDialog.value = endpointId to connectionInfo
         }
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
@@ -217,14 +234,18 @@ class NearbyConnectionService(private val context: Context) {
                 stopDiscovery()
                 stopAdvertising()
                 _nearbyStatus.value = NearbyStatus.CONNECTION_SUCCESS
-                _showConnectionDialog.value?.second?.let { info ->
+                pendingConnectionInfo.remove(endpointId)?.let { info ->
                     _connectedEndpoints.update { it + (endpointId to info) }
                 }
             }
-            ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED ->
+            ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
                 _nearbyStatus.value = NearbyStatus.REJECTED
-            ConnectionsStatusCodes.STATUS_ERROR ->
+                pendingConnectionInfo.remove(endpointId)
+            }
+            ConnectionsStatusCodes.STATUS_ERROR -> {
                 _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
+                pendingConnectionInfo.remove(endpointId)
+            }
         }
     }
 

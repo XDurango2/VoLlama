@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.XDurango.VoLlama.CallMode.CallModeActivity
+import com.XDurango.VoLlama.CallMode.WalkieTalkieActivity
 import com.XDurango.VoLlama.Nearby.NearbyConnectionService
 import com.XDurango.VoLlama.MainMenu.ViewModelApp
 import com.XDurango.VoLlama.ui.theme.VoLlamaTheme
@@ -709,10 +710,14 @@ fun MainMenuScreen(
                             context.startActivity(intent)
                         },
                         onWalkieTalkieMode = {
-                            // Implementar modo Walkie-Talkie si es necesario
+                            val intent = Intent(context, WalkieTalkieActivity::class.java).apply {
+                                putExtra("ENDPOINT_ID", pair.first)
+                                putExtra("ENDPOINT_NAME", pair.second.endpointName)
+                            }
+                            context.startActivity(intent)
                         },
                         onDisconnect = {
-                            viewModel.onEvent(MainEvent.Disconnect)
+                            viewModel.onEvent(MainEvent.Disconnect(pair.first))
                         }
                     )
                 }

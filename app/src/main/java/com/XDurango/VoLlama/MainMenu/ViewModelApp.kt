@@ -75,8 +75,8 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
 
 
 
-            MainEvent.Disconnect -> {
-                nearbyService.disconnectFromAll()
+            is MainEvent.Disconnect -> {
+                nearbyService.disconnectFromEndpoint(event.endpointId)
                 _toastMessage.value = "Desconectado"
             }
         }

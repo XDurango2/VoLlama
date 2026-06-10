@@ -89,11 +89,15 @@
             android:theme="@style/Theme.VoLlama"
             />
 
-        <activity android:name=".WalkieTalkieActivity"
+        <activity
+            android:name=".CallMode.WalkieTalkieActivity"
             android:exported="false"
-            android:theme="@style/Theme.VoLlama"
-            />
+            android:theme="@style/Theme.VoLlama" />
 
+        <service
+            android:name=".CallMode.CallAudioService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
     </application>
 

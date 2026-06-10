@@ -29,5 +29,5 @@ sealed interface MainEvent {
     data class ChangeMode(val index: Int) : MainEvent
     data class Connect(val endpointId: String) : MainEvent
 
-    data object Disconnect : MainEvent
+    data class Disconnect(val endpointId: String) : MainEvent
 }
