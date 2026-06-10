@@ -1,15 +1,25 @@
 *.iml
 .gradle
-/local.properties
+local.properties
+
+# Android Studio / IntelliJ
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
-.DS_Store
+/.idea/migrations.xml
+/.idea/AndroidProjectSystem.xml
+
+# Kotlin build cache
+.kotlin/
+
+# Build outputs
 /build
 /captures
 .externalNativeBuild
 .cxx
-local.properties
+
+# macOS
+.DS_Store

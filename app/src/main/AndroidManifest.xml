@@ -84,7 +84,7 @@
         </activity>
 
         <activity
-            android:name=".CallModeActivity"
+            android:name=".CallMode.CallModeActivity"
             android:exported="false"
             android:theme="@style/Theme.VoLlama"
             />

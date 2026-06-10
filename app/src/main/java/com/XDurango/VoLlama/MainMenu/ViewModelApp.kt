@@ -1,21 +1,22 @@
-package com.XDurango.VoLlama
+package com.XDurango.VoLlama.MainMenu
 
-import android.Manifest
 import android.app.Application
-import androidx.annotation.RequiresPermission
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.viewModelScope
+import com.XDurango.VoLlama.Nearby.NearbyConnectionService
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-
 @HiltViewModel
-class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnectionService,application: Application) : AndroidViewModel(application) {
+class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnectionService, application: Application) : AndroidViewModel(application) {
 
 
     // ---------------- UI STATE ----------------
@@ -23,8 +24,8 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
     val uiState = _uiState.asStateFlow()
 
     // ---------------- ONE-SHOT EVENTS ----------------
-    private val _toastMessage = MutableLiveData<String?>()
-    val toastMessage: LiveData<String?> = _toastMessage
+    private val _toastMessage = MutableStateFlow<String?>(null)
+    val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
     val showConnectionDialog: LiveData<Pair<String, ConnectionInfo>?> =
         nearbyService.showConnectionDialog
@@ -33,6 +34,7 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
     init {
         observeNearby()
     }
+    val callStatus : StateFlow<NearbyConnectionService.ConnectionSignal?> = nearbyService.receivedSignals
 
     // ---------------- EVENT HANDLER ----------------
    // @RequiresPermission(Manifest.permission.RECORD_AUDIO)
@@ -111,26 +113,31 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
 
     // ---------------- STATE SYNC ----------------
     private fun observeNearby() {
-
-        nearbyService.discoveredEndpoints.observeForever {
-            _uiState.update { state ->
-                state.copy(discoveredEndpoints = it)
+        viewModelScope.launch {
+            // ✅ Combinar múltiples flows en uno solo
+            combine(
+                nearbyService.discoveredEndpoints,
+                nearbyService.connectedEndpoints,
+                nearbyService.nearbyMode
+            ) { discovered, connected, mode ->
+                Triple(discovered, connected, mode)
+            }.collect { (discovered, connected, mode) ->
+                _uiState.update { state ->
+                    state.copy(
+                        discoveredEndpoints = discovered.map { (id, info) ->
+                            NearbyConnectionService.DiscoveredEndpoint(
+                                endpointId = id,
+                                name = info.endpointName,
+                                serviceId = info.serviceId,
+                                fullInfo = info
+                            )
+                        },
+                        connectedEndpoints = connected,
+                        nearbyStatus = mode,
+                        endpointName = nearbyService.endpoint
+                    )
+                }
             }
-        }
-
-        nearbyService.connectedEndpoints.observeForever {
-            _uiState.update { state ->
-                state.copy(connectedEndpoints = it)
-            }
-        }
-
-        nearbyService.nearbyMode.observeForever {
-            _uiState.update { state ->
-                state.copy(nearbyStatus = it)
-            }
-        }
-        _uiState.update { state ->
-            state.copy(endpointName = nearbyService.endpoint)
         }
     }
 
@@ -138,6 +145,12 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
     fun acceptConnection(endpointId: String) {
         nearbyService.acceptConnection(endpointId)
 
+    }
+    fun sendConnectionSignal(endpointId: String,signal: NearbyConnectionService.ConnectionSignalsTypes){
+        nearbyService.sendCallSignal(endpointId,signal)
+    }
+    fun clearConnectionSignalReceived(){
+        nearbyService.clearIncomingCallSignal()
     }
 
     fun rejectConnection(endpointId: String) {

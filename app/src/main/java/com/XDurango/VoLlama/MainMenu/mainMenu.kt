@@ -1,5 +1,6 @@
-package com.XDurango.VoLlama
+package com.XDurango.VoLlama.MainMenu
 
+import com.XDurango.VoLlama.Nearby.NearbyConnectionService
 import com.google.android.gms.nearby.connection.ConnectionInfo
 
 
