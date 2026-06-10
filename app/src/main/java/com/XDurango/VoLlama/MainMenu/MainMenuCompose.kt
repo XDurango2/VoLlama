@@ -254,21 +254,36 @@ private fun IncomingCallDialogPreview(){
 @Composable
 fun IncomingCallDialog(
     endpointName: String,
-    onDismissRequest:() -> Unit,
-    onConfirmation: () -> Unit){
+    isWalkieTalkie: Boolean = false,
+    onDismissRequest: () -> Unit,
+    onConfirmation: () -> Unit
+) {
     AlertDialog(
-        icon = {Icon(Icons.Outlined.CallReceived, contentDescription = "llamada recibida")},
-        title = {Text("Solicitud de llamada")},
-        text ={ Text("El siguiente dispositivo intenta iniciar una llamada contigo: ${endpointName}, ¿deseas aceptarla?")},
-        onDismissRequest = {onDismissRequest()},
+        icon = {
+            Icon(
+                if (isWalkieTalkie) Icons.Outlined.ConnectWithoutContact
+                else Icons.Outlined.CallReceived,
+                contentDescription = null
+            )
+        },
+        title = { Text(if (isWalkieTalkie) "Solicitud de Walkie-Talkie" else "Solicitud de llamada") },
+        text = {
+            Text(
+                if (isWalkieTalkie)
+                    "$endpointName quiere iniciar un Walkie-Talkie contigo, ¿deseas aceptar?"
+                else
+                    "$endpointName intenta iniciar una llamada contigo, ¿deseas aceptarla?"
+            )
+        },
+        onDismissRequest = { onDismissRequest() },
         confirmButton = {
             TextButton(onClick = onConfirmation) {
-                Text("Aceptar llamada")
+                Text(if (isWalkieTalkie) "Aceptar" else "Aceptar llamada")
             }
         },
         dismissButton = {
-            Button(onClick = {onDismissRequest()}) {
-                Text("Rechazar llamada")
+            Button(onClick = { onDismissRequest() }) {
+                Text("Rechazar")
             }
         }
     )
@@ -756,16 +771,28 @@ fun MainMenuScreen(
     }
 
     incomingCall?.let { signal ->
-        IncomingCallDialog(signal.senderName,{viewModel.sendConnectionSignal(signal.senderId,
-            NearbyConnectionService.ConnectionSignalsTypes.CALL_REJECTED)}, onConfirmation = {
-                // Aceptar llamada
-                val intent = Intent(context, CallModeActivity::class.java).apply {
+        val isWalkie = signal.type ==
+            NearbyConnectionService.ConnectionSignalsTypes.INCOMING_WALKIE_TALKIE
+        IncomingCallDialog(
+            endpointName = signal.senderName,
+            isWalkieTalkie = isWalkie,
+            onDismissRequest = {
+                viewModel.sendConnectionSignal(
+                    signal.senderId,
+                    NearbyConnectionService.ConnectionSignalsTypes.CALL_REJECTED
+                )
+                viewModel.clearConnectionSignalReceived()
+            },
+            onConfirmation = {
+                val activityClass =
+                    if (isWalkie) WalkieTalkieActivity::class.java
+                    else CallModeActivity::class.java
+                val intent = Intent(context, activityClass).apply {
                     putExtra("ENDPOINT_ID", signal.senderId)
                     putExtra("ENDPOINT_NAME", signal.senderName)
                     putExtra("IS_INCOMING", true)
                 }
                 context.startActivity(intent)
-
                 viewModel.sendConnectionSignal(
                     signal.senderId,
                     NearbyConnectionService.ConnectionSignalsTypes.CALL_ACCEPTED

@@ -58,6 +58,7 @@ class CallManager @Inject constructor(
 
     private var callTimerJob: Job? = null
     private var pendingStream: InputStream? = null
+    private var isWalkieTalkieMode = false
 
     // ── Inicialización ────────────────────────────────────────────────────────
 
@@ -162,12 +163,14 @@ class CallManager @Inject constructor(
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun onRemoteCallAccepted() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                audioEngine.startCapture(endpointId, viewModelScope)
+            // En modo walkie-talkie no iniciamos captura aquí — solo cuando se presiona PTT
+            if (!isWalkieTalkieMode) {
+                withContext(Dispatchers.IO) {
+                    audioEngine.startCapture(endpointId, viewModelScope)
+                }
             }
             _callState.value = CallState.IN_CALL
             _callUiState.update { it.copy(isInCall = true) }
-            // Entrega el stream que pudo haber llegado antes que esta señal
             pendingStream?.let { stream ->
                 _walkieTalkieUiState.update { it.copy(isReceiving = true) }
                 audioEngine.startPlayback(stream, viewModelScope)
@@ -208,11 +211,25 @@ class CallManager @Inject constructor(
 
     // ── Walkie-Talkie ─────────────────────────────────────────────────────────
 
-    fun startWalkieTalkieMode() {
+    fun startWalkieTalkieMode(isIncoming: Boolean) {
         if (_callState.value != CallState.IDLE) return
-        _callState.value = CallState.IN_CALL
-        _callUiState.update { it.copy(isInCall = true) }
-        startCallTimer()
+        isWalkieTalkieMode = true
+        if (isIncoming) {
+            _callState.value = CallState.IN_CALL
+            _callUiState.update { it.copy(isInCall = true) }
+            startCallTimer()
+        } else {
+            viewModelScope.launch {
+                _callState.value = CallState.CONNECTING
+                withContext(Dispatchers.IO) {
+                    nearbyService.sendCallSignal(
+                        endpointId,
+                        NearbyConnectionService.ConnectionSignalsTypes.INCOMING_WALKIE_TALKIE
+                    )
+                }
+                startCallTimer()
+            }
+        }
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
@@ -241,6 +258,7 @@ class CallManager @Inject constructor(
         stopCallTimer()
         try { pendingStream?.close() } catch (_: Exception) {}
         pendingStream = null
+        isWalkieTalkieMode = false
         _callState.value = CallState.ENDED
         _callUiState.update { it.copy(isInCall = false, callDuration = 0L) }
         _walkieTalkieUiState.update { it.copy(isReceiving = false, isTransmitting = false) }

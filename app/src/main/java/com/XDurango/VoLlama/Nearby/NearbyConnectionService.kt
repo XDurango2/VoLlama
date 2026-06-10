@@ -40,7 +40,7 @@ class NearbyConnectionService(private val context: Context) {
     }
 
     enum class ConnectionSignalsTypes {
-        INCOMING_CALL, CALL_ACCEPTED, CALL_REJECTED, CALL_ENDED
+        INCOMING_CALL, INCOMING_WALKIE_TALKIE, CALL_ACCEPTED, CALL_REJECTED, CALL_ENDED
     }
 
     private val _nearbyStatus = MutableStateFlow(NearbyStatus.IDLE)
@@ -268,7 +268,8 @@ class NearbyConnectionService(private val context: Context) {
                             .copy(senderId = endpointId)
 
                         when (signal.type) {
-                            ConnectionSignalsTypes.INCOMING_CALL ->
+                            ConnectionSignalsTypes.INCOMING_CALL,
+                            ConnectionSignalsTypes.INCOMING_WALKIE_TALKIE ->
                                 _receivedSignals.value = signal
                             ConnectionSignalsTypes.CALL_ACCEPTED ->
                                 callManager?.onRemoteCallAccepted()

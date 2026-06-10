@@ -65,6 +65,7 @@ class WalkieTalkieActivity : ComponentActivity() {
 
         val endpointId = intent.getStringExtra("ENDPOINT_ID") ?: ""
         val endpointName = intent.getStringExtra("ENDPOINT_NAME") ?: ""
+        val isIncoming = intent.getBooleanExtra("IS_INCOMING", false)
 
         setContent {
             VoLlamaTheme {
@@ -85,13 +86,14 @@ class WalkieTalkieActivity : ComponentActivity() {
                         nearbyService.setCallManager(viewModel)
                     }
                     viewModel.initialize(endpointId, endpointName)
-                    viewModel.startWalkieTalkieMode()
+                    viewModel.startWalkieTalkieMode(isIncoming)
                 }
 
                 WalkieTalkieScreen(
                     viewModel = viewModel,
                     endpointId = endpointId,
-                    endpointName = endpointName
+                    endpointName = endpointName,
+                    callState = callState
                 )
             }
         }
@@ -103,14 +105,17 @@ class WalkieTalkieActivity : ComponentActivity() {
 fun WalkieTalkieScreen(
     viewModel: CallManager,
     endpointName: String,
-    endpointId: String
+    endpointId: String,
+    callState: CallState = CallState.IN_CALL
 ) {
     val callUiState by viewModel.callUiState.collectAsState()
     val walkieUiState by viewModel.walkieTalkieUiState.collectAsState()
     val initials = if (endpointName.isNotEmpty()) endpointName.take(1).uppercase() else "?"
+    val isConnecting = callState == CallState.CONNECTING
 
     val pttColor by animateColorAsState(
         targetValue = when {
+            isConnecting                 -> Color.White.copy(alpha = 0.08f)
             walkieUiState.isTransmitting -> MaterialTheme.colorScheme.primary
             walkieUiState.isReceiving    -> Color(0xFF4CAF50)
             else                         -> Color.White.copy(alpha = 0.15f)
@@ -168,7 +173,7 @@ fun WalkieTalkieScreen(
                 )
 
                 Text(
-                    text = "Walkie-Talkie • $endpointId",
+                    text = if (isConnecting) "Llamando..." else "Walkie-Talkie • $endpointId",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.LightGray.copy(alpha = 0.7f)
                 )
@@ -195,12 +200,14 @@ fun WalkieTalkieScreen(
             ) {
                 Text(
                     text = when {
+                        isConnecting                 -> "Esperando respuesta..."
                         walkieUiState.isTransmitting -> "Transmitiendo..."
                         walkieUiState.isReceiving    -> "Recibiendo..."
                         else                         -> "Mantén para hablar"
                     },
                     style = MaterialTheme.typography.titleMedium,
                     color = when {
+                        isConnecting                 -> Color.White.copy(alpha = 0.4f)
                         walkieUiState.isTransmitting -> MaterialTheme.colorScheme.primary
                         walkieUiState.isReceiving    -> Color(0xFF4CAF50)
                         else                         -> Color.White.copy(alpha = 0.6f)
@@ -213,7 +220,8 @@ fun WalkieTalkieScreen(
                         .scale(pttScale)
                         .clip(CircleShape)
                         .background(pttColor)
-                        .pointerInput(Unit) {
+                        .pointerInput(isConnecting) {
+                            if (isConnecting) return@pointerInput
                             detectTapGestures(
                                 onPress = {
                                     viewModel.onWalkieTalkieEvent(WalkieTalkieEvent.PressToTalk)
