@@ -49,6 +49,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import android.content.Intent
+import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 @AndroidEntryPoint
 class CallModeActivity : ComponentActivity() {
 
@@ -58,6 +60,7 @@ class CallModeActivity : ComponentActivity() {
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContent {
             VoLlamaTheme {
@@ -66,11 +69,14 @@ class CallModeActivity : ComponentActivity() {
                 val isIncoming = intent.getBooleanExtra("IS_INCOMING", false)
                 val viewModel: CallManager = hiltViewModel()
                 val callState by viewModel.callState.collectAsState()
+                val callUiState by viewModel.callUiState.collectAsState()
+
+                BackHandler { viewModel.onCallEvent(CallEvent.EndCall) }
 
                 LaunchedEffect(callState) {
                     if (callState == CallState.ENDED) {
                         stopService(Intent(this@CallModeActivity, CallAudioService::class.java))
-                        delay(500)
+                        delay(if (callUiState.endReason == CallEndReason.REJECTED) 2000L else 500L)
                         finish()
                     }
                 }
@@ -91,7 +97,9 @@ class CallModeActivity : ComponentActivity() {
                 CallScreen(
                     viewModel = viewModel,
                     endpointId = endpointId,
-                    endpointName = endpointName
+                    endpointName = endpointName,
+                    callState = callState,
+                    callUiState = callUiState
                 )
             }
         }
@@ -102,9 +110,10 @@ class CallModeActivity : ComponentActivity() {
 fun CallScreen(
     viewModel: CallManager,
     endpointName: String,
-    endpointId: String
+    endpointId: String,
+    callState: CallState = CallState.IN_CALL,
+    callUiState: CallUiState = CallUiState()
 ) {
-    val callUiState by viewModel.callUiState.collectAsState()
     val initials = if (endpointName.isNotEmpty()) endpointName.take(1).uppercase() else "?"
 
     Scaffold(
@@ -151,9 +160,16 @@ fun CallScreen(
                 )
 
                 Text(
-                    text = "Llamada en curso • $endpointId",
+                    text = when {
+                        callState == CallState.CONNECTING                     -> "Llamando..."
+                        callUiState.endReason == CallEndReason.REJECTED       -> "Llamada rechazada"
+                        else                                                  -> "Llamada en curso • $endpointId"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.LightGray.copy(alpha = 0.7f)
+                    color = when (callUiState.endReason) {
+                        CallEndReason.REJECTED -> MaterialTheme.colorScheme.error
+                        else                   -> Color.LightGray.copy(alpha = 0.7f)
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))

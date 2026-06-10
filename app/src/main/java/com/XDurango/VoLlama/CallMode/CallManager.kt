@@ -134,6 +134,7 @@ class CallManager @Inject constructor(
             CallEvent.AnswerCall -> {
                 if (_callState.value != CallState.IDLE) return
                 viewModelScope.launch {
+                    audioEngine.startAudioMode()
                     _callState.value = CallState.IN_CALL
                     startCallTimer()
                     withContext(Dispatchers.IO) {
@@ -163,6 +164,7 @@ class CallManager @Inject constructor(
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun onRemoteCallAccepted() {
         viewModelScope.launch {
+            audioEngine.startAudioMode()
             // En modo walkie-talkie no iniciamos captura aquí — solo cuando se presiona PTT
             if (!isWalkieTalkieMode) {
                 withContext(Dispatchers.IO) {
@@ -181,8 +183,8 @@ class CallManager @Inject constructor(
 
     /** Llamado cuando el remoto rechaza la llamada. */
     fun onRemoteCallRejected() {
+        _callUiState.update { it.copy(isInCall = false, endReason = CallEndReason.REJECTED) }
         _callState.value = CallState.ENDED
-        _callUiState.update { it.copy(isInCall = false) }
     }
 
     /** Llamado cuando el remoto cuelga o se pierde la conexión. */
@@ -215,6 +217,7 @@ class CallManager @Inject constructor(
         if (_callState.value != CallState.IDLE) return
         isWalkieTalkieMode = true
         if (isIncoming) {
+            audioEngine.startAudioMode()
             _callState.value = CallState.IN_CALL
             _callUiState.update { it.copy(isInCall = true) }
             startCallTimer()
@@ -260,7 +263,7 @@ class CallManager @Inject constructor(
         pendingStream = null
         isWalkieTalkieMode = false
         _callState.value = CallState.ENDED
-        _callUiState.update { it.copy(isInCall = false, callDuration = 0L) }
+        _callUiState.update { it.copy(isInCall = false, callDuration = 0L, endReason = null) }
         _walkieTalkieUiState.update { it.copy(isReceiving = false, isTransmitting = false) }
     }
 
@@ -297,11 +300,14 @@ class CallManager @Inject constructor(
 
 enum class CallState { IDLE, CONNECTING, IN_CALL, ENDED }
 
+enum class CallEndReason { REJECTED }
+
 data class CallUiState(
     val isInCall: Boolean = false,
     val isMuted: Boolean = false,
     val isSpeakerOn: Boolean = false,
-    val callDuration: Long = 0L
+    val callDuration: Long = 0L,
+    val endReason: CallEndReason? = null
 )
 
 data class WalkieTalkieUiState(

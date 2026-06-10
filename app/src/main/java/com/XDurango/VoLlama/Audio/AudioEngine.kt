@@ -8,6 +8,8 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import androidx.annotation.RequiresPermission
 import com.google.android.gms.nearby.connection.Payload
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +60,8 @@ class AudioEngine @Inject constructor(
 
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
 
     private var captureJob: Job? = null
     private var pipeWriterJob: Job? = null
@@ -155,9 +159,12 @@ class AudioEngine @Inject constructor(
         stopPlayback()
     }
 
+    fun startAudioMode() {
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+    }
+
     fun setSpeakerOn(enabled: Boolean) {
         audioManager.isSpeakerphoneOn = enabled
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
     }
 
     fun resetAudioMode() {
@@ -186,6 +193,11 @@ class AudioEngine @Inject constructor(
                 audioRecord = record
                 record.startRecording()
 
+                if (NoiseSuppressor.isAvailable())
+                    noiseSuppressor = NoiseSuppressor.create(record.audioSessionId)
+                if (AcousticEchoCanceler.isAvailable())
+                    echoCanceler = AcousticEchoCanceler.create(record.audioSessionId)
+
                 val buffer = ByteArray(FRAME_SIZE)
                 val silence = ByteArray(FRAME_SIZE) { 0 }
 
@@ -204,6 +216,8 @@ class AudioEngine @Inject constructor(
                 isCapturing.set(false)
                 try { record?.stop(); record?.release() } catch (_: Exception) {}
                 audioRecord = null
+                noiseSuppressor?.release(); noiseSuppressor = null
+                echoCanceler?.release(); echoCanceler = null
             }
         }
 

@@ -3,7 +3,9 @@ package com.XDurango.VoLlama.CallMode
 import android.Manifest
 import android.content.Intent
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.annotation.RequiresPermission
 import androidx.compose.animation.animateColorAsState
@@ -62,6 +64,7 @@ class WalkieTalkieActivity : ComponentActivity() {
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val endpointId = intent.getStringExtra("ENDPOINT_ID") ?: ""
         val endpointName = intent.getStringExtra("ENDPOINT_NAME") ?: ""
@@ -71,11 +74,14 @@ class WalkieTalkieActivity : ComponentActivity() {
             VoLlamaTheme {
                 val viewModel: CallManager = hiltViewModel()
                 val callState by viewModel.callState.collectAsState()
+                val callUiState by viewModel.callUiState.collectAsState()
+
+                BackHandler { viewModel.onCallEvent(CallEvent.EndCall) }
 
                 LaunchedEffect(callState) {
                     if (callState == CallState.ENDED) {
                         stopService(Intent(this@WalkieTalkieActivity, CallAudioService::class.java))
-                        delay(500)
+                        delay(if (callUiState.endReason == CallEndReason.REJECTED) 2000L else 500L)
                         finish()
                     }
                 }
@@ -93,7 +99,8 @@ class WalkieTalkieActivity : ComponentActivity() {
                     viewModel = viewModel,
                     endpointId = endpointId,
                     endpointName = endpointName,
-                    callState = callState
+                    callState = callState,
+                    endReason = callUiState.endReason
                 )
             }
         }
@@ -106,7 +113,8 @@ fun WalkieTalkieScreen(
     viewModel: CallManager,
     endpointName: String,
     endpointId: String,
-    callState: CallState = CallState.IN_CALL
+    callState: CallState = CallState.IN_CALL,
+    endReason: CallEndReason? = null
 ) {
     val callUiState by viewModel.callUiState.collectAsState()
     val walkieUiState by viewModel.walkieTalkieUiState.collectAsState()
@@ -173,9 +181,16 @@ fun WalkieTalkieScreen(
                 )
 
                 Text(
-                    text = if (isConnecting) "Llamando..." else "Walkie-Talkie • $endpointId",
+                    text = when {
+                        endReason == CallEndReason.REJECTED -> "Solicitud rechazada"
+                        isConnecting                        -> "Llamando..."
+                        else                                -> "Walkie-Talkie • $endpointId"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.LightGray.copy(alpha = 0.7f)
+                    color = when (endReason) {
+                        CallEndReason.REJECTED -> MaterialTheme.colorScheme.error
+                        else                   -> Color.LightGray.copy(alpha = 0.7f)
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
