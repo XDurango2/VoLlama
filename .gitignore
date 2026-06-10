@@ -11,6 +11,11 @@ local.properties
 /.idea/assetWizardSettings.xml
 /.idea/migrations.xml
 /.idea/AndroidProjectSystem.xml
+/.idea/appInsightsSettings.xml
+/.idea/deploymentTargetSelector.xml
+/.idea/deviceManager.xml
+/.idea/studiobot.xml
+/.idea/markdown.xml
 
 # Kotlin build cache
 .kotlin/
@@ -23,3 +28,6 @@ local.properties
 
 # macOS
 .DS_Store
+
+# Claude Code
+CLAUDE.md
