@@ -206,6 +206,34 @@ class CallManager @Inject constructor(
         }
     }
 
+    // ── Walkie-Talkie ─────────────────────────────────────────────────────────
+
+    fun startWalkieTalkieMode() {
+        if (_callState.value != CallState.IDLE) return
+        _callState.value = CallState.IN_CALL
+        _callUiState.update { it.copy(isInCall = true) }
+        startCallTimer()
+    }
+
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    fun onWalkieTalkieEvent(event: WalkieTalkieEvent) {
+        when (event) {
+            WalkieTalkieEvent.PressToTalk -> {
+                if (_callState.value != CallState.IN_CALL) return
+                viewModelScope.launch {
+                    withContext(Dispatchers.IO) {
+                        audioEngine.startCapture(endpointId, viewModelScope)
+                    }
+                    _walkieTalkieUiState.update { it.copy(isTransmitting = true) }
+                }
+            }
+            WalkieTalkieEvent.ReleaseToTalk -> {
+                audioEngine.stopCapture()
+                _walkieTalkieUiState.update { it.copy(isTransmitting = false) }
+            }
+        }
+    }
+
     // ── Limpieza ──────────────────────────────────────────────────────────────
 
     private fun teardownCall() {

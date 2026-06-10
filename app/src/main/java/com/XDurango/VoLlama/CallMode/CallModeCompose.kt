@@ -48,7 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
-
+import android.content.Intent
 @AndroidEntryPoint
 class CallModeActivity : ComponentActivity() {
 
@@ -260,7 +260,7 @@ fun CallControlButton(
     }
 }
 
-private fun formatDuration(durationInMillis: Long): String {
+internal fun formatDuration(durationInMillis: Long): String {
     val seconds = (durationInMillis / 1000) % 60
     val minutes = (durationInMillis / 1000) / 60
     return String.format("%02d:%02d", minutes, seconds)
