@@ -49,7 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import android.content.Intent
-import android.view.WindowManager
+import android.os.PowerManager
 import androidx.activity.compose.BackHandler
 @AndroidEntryPoint
 class CallModeActivity : ComponentActivity() {
@@ -57,10 +57,18 @@ class CallModeActivity : ComponentActivity() {
     @Inject
     lateinit var nearbyService: NearbyConnectionService
 
+    private var proximityWakeLock: PowerManager.WakeLock? = null
+
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+            proximityWakeLock = pm.newWakeLock(
+                PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                "VoLlama:CallProximity"
+            )
+        }
 
         setContent {
             VoLlamaTheme {
@@ -74,10 +82,16 @@ class CallModeActivity : ComponentActivity() {
                 BackHandler { viewModel.onCallEvent(CallEvent.EndCall) }
 
                 LaunchedEffect(callState) {
-                    if (callState == CallState.ENDED) {
-                        stopService(Intent(this@CallModeActivity, CallAudioService::class.java))
-                        delay(if (callUiState.endReason == CallEndReason.REJECTED) 2000L else 500L)
-                        finish()
+                    when (callState) {
+                        CallState.IN_CALL ->
+                            proximityWakeLock?.takeIf { !it.isHeld }?.acquire()
+                        CallState.ENDED -> {
+                            proximityWakeLock?.takeIf { it.isHeld }?.release()
+                            stopService(Intent(this@CallModeActivity, CallAudioService::class.java))
+                            delay(if (callUiState.endReason == CallEndReason.REJECTED) 2000L else 500L)
+                            finish()
+                        }
+                        else -> {}
                     }
                 }
 
@@ -103,6 +117,11 @@ class CallModeActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        proximityWakeLock?.takeIf { it.isHeld }?.release()
     }
 }
 
