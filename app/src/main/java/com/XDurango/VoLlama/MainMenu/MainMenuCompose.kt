@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.activity.compose.ManagedActivityResultLauncher
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -89,6 +90,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
+import kotlin.time.Duration.Companion.milliseconds
 private const val TIMEOUT_SECONDS = 7
 
 /**
@@ -119,7 +121,7 @@ fun OnConnectionInitiatedDialog(
         for (second in TIMEOUT_SECONDS downTo 1) {
             secondsLeft = second
             progress = second.toFloat() / TIMEOUT_SECONDS
-            delay(1000)
+            delay(1000.milliseconds)
             if (decided) return@LaunchedEffect
         }
         if (!decided) {
@@ -609,6 +611,7 @@ private fun hasAllPermissions(
     }
 }
 
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 private fun rememberNearbyPermissions(): Array<String> {
     return remember {
@@ -633,6 +636,7 @@ private fun rememberNearbyPermissions(): Array<String> {
 
 
 
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainMenuScreen(
