@@ -24,3 +24,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "VoLlama"
 include(":app")
+
+include(":koopus-library")
+project(":koopus-library").projectDir = file("external/KoOpus/library")

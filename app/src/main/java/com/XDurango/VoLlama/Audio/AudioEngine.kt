@@ -11,46 +11,52 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import androidx.annotation.RequiresPermission
-import com.google.android.gms.nearby.connection.Payload
+import com.steegler.koopus.OpusRepacketizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.IOException
-import java.io.InputStream
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.TimeUnit
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Responsabilidad única: capturar audio del micrófono y reproducir audio entrante.
- * No conoce nada de UI, ViewModel ni estado de llamada.
+ * Responsabilidad única: capturar audio del micrófono, codificarlo/decodificarlo con Opus
+ * (vía [OpusCodec]) y reproducir el audio entrante. No conoce nada de UI ni de ViewModel.
  *
- * El caller (CallCoordinator) decide cuándo iniciar/detener y provee
- * los callbacks para saber si algo falló.
+ * El audio viaja como paquetes Opus discretos (`Payload.BYTES` de Nearby, ver
+ * [NearbyConnectionService.sendAudioFrame]) en vez de un stream continuo de PCM crudo:
+ * cada paquete lleva un header de 2 bytes con un número de secuencia (para detectar
+ * pérdida/reordering) seguido del paquete Opus en sí. Dos frames de 20ms se fusionan con
+ * [OpusRepacketizer] en un solo paquete de 40ms antes de enviarse, para reducir a la mitad
+ * la tasa de payloads/seg sobre Nearby.
+ *
+ * El caller (CallManager) decide cuándo iniciar/detener y provee los callbacks para saber
+ * si algo falló.
  */
 @Singleton
 class AudioEngine @Inject constructor(
     private val audioManager: AudioManager,
-    private val nearbyService: NearbyConnectionService
+    private val nearbyService: NearbyConnectionService,
+    private val opusCodec: OpusCodec
 ) {
 
     // ── Configuración de audio ────────────────────────────────────────────────
 
     companion object {
-        const val SAMPLE_RATE = 16000
+        const val SAMPLE_RATE = OpusCodec.SAMPLE_RATE
         const val CHANNEL_CONFIG_IN = AudioFormat.CHANNEL_IN_MONO
         const val CHANNEL_CONFIG_OUT = AudioFormat.CHANNEL_OUT_MONO
         const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        const val FRAME_SIZE = 640
-        const val PIPED_BUFFER_SIZE = 1024 * 32
-        const val AUDIO_QUEUE_CAPACITY = 80 // ~3.2s de buffer a 640 bytes/frame
+        const val FRAME_SIZE = OpusCodec.FRAME_SIZE_SAMPLES * 2 // 640 bytes = 320 samples = 20ms
+        private const val MAX_OPUS_PACKET_SIZE = 4000 // tamaño máximo de un paquete Opus
+        private const val FRAMES_PER_MERGED_PACKET = 2 // 2×20ms → paquete de 40ms
+        private const val INCOMING_QUEUE_CAPACITY = 64
     }
 
     // ── Estado interno ────────────────────────────────────────────────────────
@@ -64,11 +70,8 @@ class AudioEngine @Inject constructor(
     private var echoCanceler: AcousticEchoCanceler? = null
 
     private var captureJob: Job? = null
-    private var pipeWriterJob: Job? = null
     private var playbackJob: Job? = null
-
-    private var audioQueue: ArrayBlockingQueue<ByteArray>? = null
-    private var pipedOutputStream: PipedOutputStream? = null
+    private var incomingFrames: Channel<ByteArray>? = null
 
     // ── Callbacks hacia el coordinador ────────────────────────────────────────
 
@@ -83,80 +86,63 @@ class AudioEngine @Inject constructor(
     // ── API pública ───────────────────────────────────────────────────────────
 
     /**
-     * Abre el stream de audio hacia [endpointId] y comienza a capturar el micrófono.
-     * Usa una ArrayBlockingQueue para desacoplar la captura del micrófono
-     * de la escritura en red, evitando bloqueos cuando hay backpressure.
+     * Comienza a capturar el micrófono, codificar a Opus y enviar los paquetes resultantes
+     * a [endpointId] vía [NearbyConnectionService.sendAudioFrame].
      *
      * @param scope CoroutineScope del caller (viewModelScope del coordinador)
      */
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startCapture(endpointId: String, scope: CoroutineScope) {
         if (!isCapturing.compareAndSet(false, true)) return
-
-        val queue = ArrayBlockingQueue<ByteArray>(AUDIO_QUEUE_CAPACITY)
-        audioQueue = queue
-
-        val outStream = PipedOutputStream()
-        val inStream = PipedInputStream(outStream, PIPED_BUFFER_SIZE)
-        pipedOutputStream = outStream
-
-        // Entregar el stream a Nearby
-        val payload = Payload.fromStream(inStream)
-        nearbyService.connectionsClient.sendPayload(endpointId, payload)
-            .addOnFailureListener {
-                stopCapture()
-                onCaptureError?.invoke()
-            }
-
-        // Hilo 1: micrófono → queue  (nunca bloquea por la red)
+        opusCodec.open()
         captureJob = scope.launch(Dispatchers.IO) {
-            runAudioCapture(queue)
-        }
-
-        // Hilo 2: queue → PipedOutputStream (desacoplado del micrófono)
-        pipeWriterJob = scope.launch(Dispatchers.IO) {
-            runPipeWriter(queue, outStream)
+            runAudioCapture(endpointId)
         }
     }
 
     /**
-     * Inicia la reproducción del stream entrante en el altavoz/auricular.
+     * Inicia el consumidor de audio entrante: decodifica los paquetes Opus recibidos
+     * (alimentados vía [feedIncomingAudioFrame]) y los reproduce en el altavoz/auricular.
      *
-     * @param inputStream Stream recibido desde Nearby (Payload.Type.STREAM)
      * @param scope CoroutineScope del caller
      */
-    fun startPlayback(inputStream: InputStream, scope: CoroutineScope) {
-        if (!isPlaying.compareAndSet(false, true)) {
-            try { inputStream.close() } catch (_: Exception) {}
-            return
-        }
-
+    fun startPlayback(scope: CoroutineScope) {
+        if (!isPlaying.compareAndSet(false, true)) return
+        opusCodec.open()
+        val channel = Channel<ByteArray>(capacity = INCOMING_QUEUE_CAPACITY)
+        incomingFrames = channel
         playbackJob = scope.launch(Dispatchers.IO) {
-            runPlayback(inputStream)
+            runPlayback(channel)
         }
+    }
+
+    /**
+     * Alimenta un paquete de audio entrante (seq de 2 bytes + paquete Opus) recibido de Nearby.
+     * Se descarta silenciosamente si la reproducción no está activa.
+     */
+    fun feedIncomingAudioFrame(frame: ByteArray) {
+        incomingFrames?.trySend(frame)
     }
 
     fun stopCapture() {
         isCapturing.set(false)
         captureJob?.cancel()
         captureJob = null
-        pipeWriterJob?.cancel()
-        pipeWriterJob = null
-        audioQueue?.clear()
-        audioQueue = null
-        try { pipedOutputStream?.close() } catch (_: Exception) {}
-        pipedOutputStream = null
     }
 
     fun stopPlayback() {
         isPlaying.set(false)
         playbackJob?.cancel()
         playbackJob = null
+        incomingFrames?.close()
+        incomingFrames = null
     }
 
+    /** Detiene captura y reproducción, y libera el codec Opus (fin de la llamada). */
     fun stopAll() {
         stopCapture()
         stopPlayback()
+        opusCodec.close()
     }
 
     fun startAudioMode() {
@@ -175,9 +161,19 @@ class AudioEngine @Inject constructor(
     // ── Implementación privada ────────────────────────────────────────────────
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    private suspend fun runAudioCapture(queue: ArrayBlockingQueue<ByteArray>) =
+    private suspend fun runAudioCapture(endpointId: String) =
         withContext(Dispatchers.IO) {
             var record: AudioRecord? = null
+            var repacketizer: OpusRepacketizer? = null
+            var pendingPacket: ByteArray? = null
+            var seq = 0
+
+            fun sendPacket(packet: ByteArray) {
+                val header = byteArrayOf((seq shr 8).toByte(), seq.toByte())
+                seq = (seq + 1) and 0xFFFF
+                nearbyService.sendAudioFrame(endpointId, header + packet)
+            }
+
             try {
                 val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN, AUDIO_FORMAT)
                 record = AudioRecord(
@@ -198,50 +194,49 @@ class AudioEngine @Inject constructor(
                 if (AcousticEchoCanceler.isAvailable())
                     echoCanceler = AcousticEchoCanceler.create(record.audioSessionId)
 
+                repacketizer = OpusRepacketizer.create()
+
                 val buffer = ByteArray(FRAME_SIZE)
-                val silence = ByteArray(FRAME_SIZE) { 0 }
+                val silencePcm = ShortArray(OpusCodec.FRAME_SIZE_SAMPLES)
+                val mergeBuffer = ByteArray(MAX_OPUS_PACKET_SIZE)
 
                 while (isActive && isCapturing.get()) {
                     val read = record.read(buffer, 0, FRAME_SIZE)
-                    if (read > 0) {
-                        // offer() descarta el frame si la queue está llena
-                        // (mejor perder un frame que bloquear el hilo de captura)
-                        queue.offer(if (isMuted) silence.copyOf() else buffer.copyOf())
+                    if (read <= 0) continue
+
+                    val pcm = if (isMuted) silencePcm else bytesToShorts(buffer, read)
+                    val packet = opusCodec.encode(pcm) ?: continue
+
+                    val first = pendingPacket
+                    if (first == null) {
+                        pendingPacket = packet
+                        continue
                     }
+                    pendingPacket = null
+
+                    repacketizer.init()
+                    repacketizer.cat(first)
+                    repacketizer.cat(packet)
+                    val mergedLen = repacketizer.out(mergeBuffer)
+                    if (mergedLen > 0) sendPacket(mergeBuffer.copyOf(mergedLen))
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 onCaptureError?.invoke()
             } finally {
                 isCapturing.set(false)
+                // Frame suelto (20ms) que quedó sin pareja al detener la captura — se manda
+                // sin fusionar para no perder la cola de audio; decodeAggregated() lo soporta igual.
+                pendingPacket?.let { sendPacket(it) }
                 try { record?.stop(); record?.release() } catch (_: Exception) {}
                 audioRecord = null
                 noiseSuppressor?.release(); noiseSuppressor = null
                 echoCanceler?.release(); echoCanceler = null
+                try { repacketizer?.destroy() } catch (_: Exception) {}
             }
         }
 
-    private suspend fun runPipeWriter(
-        queue: ArrayBlockingQueue<ByteArray>,
-        outStream: PipedOutputStream
-    ) = withContext(Dispatchers.IO) {
-        try {
-            while (isActive && isCapturing.get()) {
-                val frame = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
-                try {
-                    outStream.write(frame)
-                    outStream.flush()
-                } catch (e: IOException) {
-                    // El pipe se cerró (llamada terminada), salimos limpiamente
-                    break
-                }
-            }
-        } finally {
-            try { outStream.close() } catch (_: Exception) {}
-        }
-    }
-
-    private suspend fun runPlayback(inputStream: InputStream) =
+    private suspend fun runPlayback(channel: Channel<ByteArray>) =
         withContext(Dispatchers.IO) {
             var track: AudioTrack? = null
             try {
@@ -267,19 +262,43 @@ class AudioEngine @Inject constructor(
                 audioTrack = track
                 track.play()
 
-                val buffer = ByteArray(FRAME_SIZE)
+                val maxSamples = OpusCodec.FRAME_SIZE_SAMPLES * FRAMES_PER_MERGED_PACKET
+                var expectedSeq = -1
+
                 while (isActive && isPlaying.get()) {
-                    val read = inputStream.read(buffer)
-                    if (read == -1) break
-                    if (read > 0) track.write(buffer, 0, read)
+                    val frame = channel.receiveCatching().getOrNull() ?: break
+                    if (frame.size <= 2) continue
+
+                    val seq = ((frame[0].toInt() and 0xFF) shl 8) or (frame[1].toInt() and 0xFF)
+                    val packet = frame.copyOfRange(2, frame.size)
+
+                    if (expectedSeq >= 0) {
+                        val gap = (seq - expectedSeq) and 0xFFFF
+                        when {
+                            gap in 1..2 -> repeat(gap) {
+                                opusCodec.decode(null)?.let { pcm -> track.write(pcm, 0, pcm.size) }
+                            }
+                            gap > 2 -> opusCodec.resetDecoder()
+                        }
+                    }
+                    expectedSeq = (seq + 1) and 0xFFFF
+
+                    val pcm = opusCodec.decodeAggregated(packet, maxSamples)
+                    if (pcm != null) track.write(pcm, 0, pcm.size)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
                 isPlaying.set(false)
-                try { track?.stop(); track?.release(); inputStream.close() } catch (_: Exception) {}
+                try { track?.stop(); track?.release() } catch (_: Exception) {}
                 audioTrack = null
                 onPlaybackEnded?.invoke()
             }
         }
+
+    private fun bytesToShorts(bytes: ByteArray, length: Int): ShortArray {
+        val shorts = ShortArray(length / 2)
+        ByteBuffer.wrap(bytes, 0, length).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+        return shorts
+    }
 }

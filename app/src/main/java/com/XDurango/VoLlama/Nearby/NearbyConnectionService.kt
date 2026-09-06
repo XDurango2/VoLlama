@@ -26,7 +26,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import com.google.gson.Gson
-import java.io.InputStream
 import com.XDurango.VoLlama.CallMode.CallManager
 
 class NearbyConnectionService(private val context: Context) {
@@ -60,28 +59,22 @@ class NearbyConnectionService(private val context: Context) {
 
     companion object {
         const val SERVICE_ID = "com.XDurango.VoLlama"
+
+        // Tag de 1 byte al inicio de cada Payload.BYTES para distinguir señalización de audio.
+        private const val TAG_SIGNAL: Byte = 0x53 // 'S'
+        private const val TAG_AUDIO: Byte = 0x41  // 'A'
     }
 
     val endpoint = "${Build.MANUFACTURER} - ${Build.MODEL}"
     val connectionsClient by lazy { Nearby.getConnectionsClient(context) }
 
     private var callManager: CallManager? = null
-    private var pendingIncomingStream: InputStream? = null
     private val pendingConnectionInfo = mutableMapOf<String, ConnectionInfo>()
 
     // ── Coordinator ───────────────────────────────────────────────────────────
 
     fun setCallManager(coordinator: CallManager?) {
         this.callManager = coordinator
-        if (coordinator != null) {
-            pendingIncomingStream?.let { stream ->
-                coordinator.onIncomingAudioStream(stream)
-                pendingIncomingStream = null
-            }
-        } else {
-            try { pendingIncomingStream?.close() } catch (_: Exception) {}
-            pendingIncomingStream = null
-        }
     }
 
     // ── API de Nearby — main thread directo ───────────────────────────────────
@@ -138,8 +131,6 @@ class NearbyConnectionService(private val context: Context) {
         } finally {
             _showConnectionDialog.value = null
             pendingConnectionInfo.remove(endpointId)
-            try { pendingIncomingStream?.close() } catch (_: Exception) {}
-            pendingIncomingStream = null
         }
     }
 
@@ -157,14 +148,21 @@ class NearbyConnectionService(private val context: Context) {
             val json = Gson().toJson(
                 ConnectionSignal(type = signal, senderId = "", senderName = endpoint)
             )
-            connectionsClient.sendPayload(endpointId, Payload.fromBytes(json.toByteArray()))
+            val payload = byteArrayOf(TAG_SIGNAL) + json.toByteArray()
+            connectionsClient.sendPayload(endpointId, Payload.fromBytes(payload))
+        } catch (e: Exception) { e.printStackTrace() }
+    }
+
+    /** Envía un frame de audio Opus (ya codificado) como Payload.BYTES. */
+    fun sendAudioFrame(endpointId: String, frame: ByteArray) {
+        try {
+            val payload = byteArrayOf(TAG_AUDIO) + frame
+            connectionsClient.sendPayload(endpointId, Payload.fromBytes(payload))
         } catch (e: Exception) { e.printStackTrace() }
     }
 
     fun clearIncomingCallSignal() {
         _receivedSignals.value = null
-        try { pendingIncomingStream?.close() } catch (_: Exception) {}
-        pendingIncomingStream = null
     }
 
     fun disconnectFromEndpoint(endpointId: String) {
@@ -263,32 +261,34 @@ class NearbyConnectionService(private val context: Context) {
                 when (payload.type) {
                     Payload.Type.BYTES -> {
                         val bytes = payload.asBytes() ?: return
-                        val signal = Gson()
-                            .fromJson(String(bytes), ConnectionSignal::class.java)
-                            .copy(senderId = endpointId)
+                        if (bytes.isEmpty()) return
 
-                        when (signal.type) {
-                            ConnectionSignalsTypes.INCOMING_CALL,
-                            ConnectionSignalsTypes.INCOMING_WALKIE_TALKIE ->
-                                _receivedSignals.value = signal
-                            ConnectionSignalsTypes.CALL_ACCEPTED ->
-                                callManager?.onRemoteCallAccepted()
-                            ConnectionSignalsTypes.CALL_REJECTED ->
-                                callManager?.onRemoteCallRejected()
-                            ConnectionSignalsTypes.CALL_ENDED ->
-                                callManager?.onRemoteCallEnded()
+                        when (bytes[0]) {
+                            TAG_AUDIO -> {
+                                callManager?.onIncomingAudioFrame(bytes.copyOfRange(1, bytes.size))
+                            }
+                            TAG_SIGNAL -> {
+                                val json = String(bytes, 1, bytes.size - 1)
+                                val signal = Gson()
+                                    .fromJson(json, ConnectionSignal::class.java)
+                                    .copy(senderId = endpointId)
+
+                                when (signal.type) {
+                                    ConnectionSignalsTypes.INCOMING_CALL,
+                                    ConnectionSignalsTypes.INCOMING_WALKIE_TALKIE ->
+                                        _receivedSignals.value = signal
+                                    ConnectionSignalsTypes.CALL_ACCEPTED ->
+                                        callManager?.onRemoteCallAccepted()
+                                    ConnectionSignalsTypes.CALL_REJECTED ->
+                                        callManager?.onRemoteCallRejected()
+                                    ConnectionSignalsTypes.CALL_ENDED ->
+                                        callManager?.onRemoteCallEnded()
+                                }
+                            }
                         }
                     }
 
-                    Payload.Type.STREAM -> {
-                        val stream = payload.asStream()?.asInputStream() ?: return
-                        if (callManager != null) {
-                            callManager?.onIncomingAudioStream(stream)
-                        } else {
-                            try { pendingIncomingStream?.close() } catch (_: Exception) {}
-                            pendingIncomingStream = stream
-                        }
-                    }
+                    Payload.Type.STREAM -> { /* no usado: el audio viaja por BYTES (Opus) */ }
 
                     Payload.Type.FILE -> { /* no usado */ }
                 }

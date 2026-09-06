@@ -17,7 +17,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.InputStream
 import javax.inject.Inject
 
 /**
@@ -57,7 +56,10 @@ class CallManager @Inject constructor(
     val walkieTalkieUiState: StateFlow<WalkieTalkieUiState> = _walkieTalkieUiState.asStateFlow()
 
     private var callTimerJob: Job? = null
-    private var pendingStream: InputStream? = null
+
+    /** Frames de audio que llegan mientras el estado es CONNECTING (antes de CALL_ACCEPTED). */
+    private val pendingAudioFrames = ArrayDeque<ByteArray>()
+    private val maxPendingAudioFrames = 10
     private var isWalkieTalkieMode = false
 
     // ── Inicialización ────────────────────────────────────────────────────────
@@ -140,7 +142,9 @@ class CallManager @Inject constructor(
                     withContext(Dispatchers.IO) {
                         audioEngine.startCapture(endpointId, viewModelScope)
                     }
+                    audioEngine.startPlayback(viewModelScope)
                     _callUiState.update { it.copy(isInCall = true) }
+                    flushPendingAudioFrames()
                 }
             }
 
@@ -171,13 +175,18 @@ class CallManager @Inject constructor(
                     audioEngine.startCapture(endpointId, viewModelScope)
                 }
             }
+            audioEngine.startPlayback(viewModelScope)
             _callState.value = CallState.IN_CALL
             _callUiState.update { it.copy(isInCall = true) }
-            pendingStream?.let { stream ->
-                _walkieTalkieUiState.update { it.copy(isReceiving = true) }
-                audioEngine.startPlayback(stream, viewModelScope)
-                pendingStream = null
-            }
+            flushPendingAudioFrames()
+        }
+    }
+
+    private fun flushPendingAudioFrames() {
+        if (pendingAudioFrames.isEmpty()) return
+        _walkieTalkieUiState.update { it.copy(isReceiving = true) }
+        while (pendingAudioFrames.isNotEmpty()) {
+            audioEngine.feedIncomingAudioFrame(pendingAudioFrames.removeFirst())
         }
     }
 
@@ -193,21 +202,21 @@ class CallManager @Inject constructor(
     }
 
     /**
-     * Llamado por NearbyConnectionService cuando llega un stream de audio entrante.
+     * Llamado por NearbyConnectionService cuando llega un frame de audio Opus entrante.
      * El coordinator decide si reproducirlo (la llamada está activa) o descartarlo.
      */
-    fun onIncomingAudioStream(stream: InputStream) {
+    fun onIncomingAudioFrame(frame: ByteArray) {
         when (_callState.value) {
             CallState.IN_CALL -> {
                 _walkieTalkieUiState.update { it.copy(isReceiving = true) }
-                audioEngine.startPlayback(stream, viewModelScope)
+                audioEngine.feedIncomingAudioFrame(frame)
             }
             CallState.CONNECTING -> {
-                // El stream llegó antes que CALL_ACCEPTED — lo guardamos
-                try { pendingStream?.close() } catch (_: Exception) {}
-                pendingStream = stream
+                // El frame llegó antes que CALL_ACCEPTED — lo guardamos
+                if (pendingAudioFrames.size >= maxPendingAudioFrames) pendingAudioFrames.removeFirst()
+                pendingAudioFrames.addLast(frame)
             }
-            else -> try { stream.close() } catch (_: Exception) {}
+            else -> Unit
         }
     }
 
@@ -218,9 +227,11 @@ class CallManager @Inject constructor(
         isWalkieTalkieMode = true
         if (isIncoming) {
             audioEngine.startAudioMode()
+            audioEngine.startPlayback(viewModelScope)
             _callState.value = CallState.IN_CALL
             _callUiState.update { it.copy(isInCall = true) }
             startCallTimer()
+            flushPendingAudioFrames()
         } else {
             viewModelScope.launch {
                 _callState.value = CallState.CONNECTING
@@ -259,8 +270,7 @@ class CallManager @Inject constructor(
     private fun teardownCall() {
         audioEngine.stopAll()
         stopCallTimer()
-        try { pendingStream?.close() } catch (_: Exception) {}
-        pendingStream = null
+        pendingAudioFrames.clear()
         isWalkieTalkieMode = false
         _callState.value = CallState.ENDED
         _callUiState.update { it.copy(isInCall = false, callDuration = 0L, endReason = null) }

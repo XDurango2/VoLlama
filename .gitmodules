@@ -1,0 +1,3 @@
+[submodule "external/KoOpus"]
+	path = external/KoOpus
+	url = https://github.com/Steegler/KoOpus.git

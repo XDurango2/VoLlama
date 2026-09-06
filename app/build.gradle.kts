@@ -53,6 +53,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation ("com.google.code.gson:gson:2.13.2")
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
+    implementation(project(":koopus-library"))
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
