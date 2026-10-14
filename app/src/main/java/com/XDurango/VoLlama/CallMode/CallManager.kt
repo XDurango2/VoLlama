@@ -7,6 +7,7 @@ import androidx.annotation.RequiresPermission
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -38,6 +39,9 @@ class CallManager @Inject constructor(
 ) : ViewModel() {
 
     // ── Identidad del endpoint remoto ─────────────────────────────────────────
+
+    /** Dispatcher para el trabajo bloqueante (señalización/captura). Reemplazable en tests. */
+    internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 
     private var endpointId: String = ""
     private var endpointName: String = ""
@@ -120,14 +124,16 @@ class CallManager @Inject constructor(
 
             CallEvent.StartCall -> {
                 if (_callState.value != CallState.IDLE) return
+                // Se fija antes de lanzar la corrutina: un segundo toque ya ve CONNECTING.
+                _callState.value = CallState.CONNECTING
                 viewModelScope.launch {
-                    _callState.value = CallState.CONNECTING
-                    withContext(Dispatchers.IO) {
+                    withContext(ioDispatcher) {
                         nearbyService.sendCallSignal(
                             endpointId,
                             NearbyConnectionService.ConnectionSignalsTypes.INCOMING_CALL
                         )
                     }
+                    if (_callState.value != CallState.CONNECTING) return@launch // colgaron mientras tanto
                     startCallTimer()
                     _callUiState.update { it.copy(isInCall = true) }
                 }
@@ -135,13 +141,14 @@ class CallManager @Inject constructor(
 
             CallEvent.AnswerCall -> {
                 if (_callState.value != CallState.IDLE) return
+                _callState.value = CallState.IN_CALL
                 viewModelScope.launch {
                     audioEngine.startAudioMode()
-                    _callState.value = CallState.IN_CALL
                     startCallTimer()
-                    withContext(Dispatchers.IO) {
+                    withContext(ioDispatcher) {
                         audioEngine.startCapture(endpointId, viewModelScope)
                     }
+                    if (abortIfCallEnded()) return@launch
                     audioEngine.startPlayback(viewModelScope)
                     _callUiState.update { it.copy(isInCall = true) }
                     flushPendingAudioFrames()
@@ -150,7 +157,7 @@ class CallManager @Inject constructor(
 
             CallEvent.EndCall -> {
                 viewModelScope.launch {
-                    withContext(Dispatchers.IO) {
+                    withContext(ioDispatcher) {
                         nearbyService.sendCallSignal(
                             endpointId,
                             NearbyConnectionService.ConnectionSignalsTypes.CALL_ENDED
@@ -167,19 +174,33 @@ class CallManager @Inject constructor(
     /** Llamado cuando el remoto acepta la llamada que iniciamos nosotros. */
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun onRemoteCallAccepted() {
+        // Solo tiene sentido mientras esperamos la respuesta: un CALL_ACCEPTED tardío (tras colgar)
+        // o duplicado no debe reabrir el audio.
+        if (_callState.value != CallState.CONNECTING) return
+        _callState.value = CallState.IN_CALL
         viewModelScope.launch {
             audioEngine.startAudioMode()
             // En modo walkie-talkie no iniciamos captura aquí — solo cuando se presiona PTT
             if (!isWalkieTalkieMode) {
-                withContext(Dispatchers.IO) {
+                withContext(ioDispatcher) {
                     audioEngine.startCapture(endpointId, viewModelScope)
                 }
             }
+            if (abortIfCallEnded()) return@launch
             audioEngine.startPlayback(viewModelScope)
-            _callState.value = CallState.IN_CALL
             _callUiState.update { it.copy(isInCall = true) }
             flushPendingAudioFrames()
         }
+    }
+
+    /**
+     * Tras una suspensión la llamada pudo terminar (el usuario colgó mientras se arrancaba el audio).
+     * Si es así, lo que se alcanzó a iniciar se detiene para no dejar audio huérfano.
+     */
+    private fun abortIfCallEnded(): Boolean {
+        if (_callState.value == CallState.IN_CALL) return false
+        audioEngine.stopAll()
+        return true
     }
 
     private fun flushPendingAudioFrames() {
@@ -235,7 +256,7 @@ class CallManager @Inject constructor(
         } else {
             viewModelScope.launch {
                 _callState.value = CallState.CONNECTING
-                withContext(Dispatchers.IO) {
+                withContext(ioDispatcher) {
                     nearbyService.sendCallSignal(
                         endpointId,
                         NearbyConnectionService.ConnectionSignalsTypes.INCOMING_WALKIE_TALKIE
@@ -252,7 +273,7 @@ class CallManager @Inject constructor(
             WalkieTalkieEvent.PressToTalk -> {
                 if (_callState.value != CallState.IN_CALL) return
                 viewModelScope.launch {
-                    withContext(Dispatchers.IO) {
+                    withContext(ioDispatcher) {
                         audioEngine.startCapture(endpointId, viewModelScope)
                     }
                     _walkieTalkieUiState.update { it.copy(isTransmitting = true) }
@@ -272,8 +293,13 @@ class CallManager @Inject constructor(
         stopCallTimer()
         pendingAudioFrames.clear()
         isWalkieTalkieMode = false
+        // AudioEngine es singleton: mute/altavoz/modo de audio sobreviven a la llamada si no se limpian.
+        audioEngine.isMuted = false
+        audioEngine.resetAudioMode()
         _callState.value = CallState.ENDED
-        _callUiState.update { it.copy(isInCall = false, callDuration = 0L, endReason = null) }
+        _callUiState.update {
+            it.copy(isInCall = false, isMuted = false, isSpeakerOn = false, callDuration = 0L, endReason = null)
+        }
         _walkieTalkieUiState.update { it.copy(isReceiving = false, isTransmitting = false) }
     }
 

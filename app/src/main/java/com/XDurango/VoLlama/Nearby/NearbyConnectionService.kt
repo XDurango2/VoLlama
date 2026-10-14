@@ -70,6 +70,9 @@ class NearbyConnectionService(private val context: Context) {
         private const val SIGNAL_RETRY_DELAY_MS = 300L
         private const val MAX_START_RETRIES = 1
         private const val RETRY_DELAY_MS = 500L
+
+        // Fallos aislados de payload son normales en radios saturados; solo una racha larga indica enlace roto.
+        private const val MAX_CONSECUTIVE_PAYLOAD_FAILURES = 10
     }
 
     val endpoint = "${Build.MANUFACTURER} - ${Build.MODEL}"
@@ -192,7 +195,13 @@ class NearbyConnectionService(private val context: Context) {
             connectionsClient.requestConnection(
                 endpoint, endpointId,
                 discoveryConnectionCallback // auto-acepta sin dialog
-            ).addOnFailureListener { _showConnectionDialog.value = null }
+            ).addOnFailureListener { e ->
+                _showConnectionDialog.value = null
+                // Sin esto la UI se queda esperando: el fallo (radio, BT, timeout) era silencioso.
+                if ((e as? ApiException)?.statusCode != ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT) {
+                    _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
+                }
+            }
         } catch (e: Exception) { e.printStackTrace() }
     }
 
@@ -319,7 +328,15 @@ class NearbyConnectionService(private val context: Context) {
                 _nearbyStatus.value = NearbyStatus.REJECTED
                 pendingConnectionInfo.remove(endpointId)
             }
-            ConnectionsStatusCodes.STATUS_ERROR -> {
+            ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT -> {
+                _nearbyStatus.value = NearbyStatus.CONNECTION_SUCCESS
+                pendingConnectionInfo.remove(endpointId)?.let { info ->
+                    _connectedEndpoints.update { it + (endpointId to info) }
+                }
+            }
+            else -> {
+                // STATUS_ERROR, IO_ERROR, BLUETOOTH/RADIO_ERROR, timeouts...: cualquier otro código es
+                // un fallo; antes quedaba IN_PROGRESS para siempre ("a veces no conecta").
                 _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
                 pendingConnectionInfo.remove(endpointId)
             }
@@ -329,12 +346,14 @@ class NearbyConnectionService(private val context: Context) {
     private fun handleDisconnected(endpointId: String) {
         _connectedEndpoints.update { it.filterNot { ep -> ep.first == endpointId }.toSet() }
         if (_connectedEndpoints.value.isEmpty()) _nearbyStatus.value = NearbyStatus.IDLE
-        callManager?.onRemoteCallEnded()
+        // Solo cuelga si se cayó el endpoint de la llamada, no cualquier otro dispositivo cercano.
+        if (callManager?.getCurrentEndpointId() == endpointId) callManager?.onRemoteCallEnded()
     }
 
     private val gson = Gson()
 
     private val seenSignalIds = ArrayDeque<String>()
+    private var consecutivePayloadFailures = 0
 
     /** @return false si la señal ya se procesó (reintento duplicado). */
     private fun markSignalSeen(id: String?): Boolean {
@@ -390,10 +409,15 @@ class NearbyConnectionService(private val context: Context) {
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            if (update.status == PayloadTransferUpdate.Status.FAILURE) {
-                val activeEndpoint = callManager?.getCurrentEndpointId()
-                if (activeEndpoint == endpointId) {
-                    callManager?.onRemoteCallEnded()
+            when (update.status) {
+                PayloadTransferUpdate.Status.SUCCESS -> consecutivePayloadFailures = 0
+                PayloadTransferUpdate.Status.FAILURE -> {
+                    if (callManager?.getCurrentEndpointId() == endpointId &&
+                        ++consecutivePayloadFailures >= MAX_CONSECUTIVE_PAYLOAD_FAILURES
+                    ) {
+                        consecutivePayloadFailures = 0
+                        callManager?.onRemoteCallEnded()
+                    }
                 }
             }
         }

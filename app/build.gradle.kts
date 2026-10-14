@@ -41,6 +41,10 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        // android.jar es un stub en tests JVM: los métodos no mockeados devuelven valores por defecto.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -62,6 +66,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     testImplementation(libs.junit)
+    testImplementation("io.mockk:mockk:1.13.16")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("app.cash.turbine:turbine:1.2.0")
+    testImplementation("androidx.arch.core:core-testing:2.2.0")
+    androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
