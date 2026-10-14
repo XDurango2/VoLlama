@@ -119,4 +119,26 @@ class OpusCodecInstrumentedTest {
         // Regresion: nativeCreate lanzaba UnsatisfiedLinkError porque el .cpp no se compilaba.
         OpusRepacketizer.create().init().destroy()
     }
+
+    @Test fun close_mientrasOtroHiloCodifica_noCrashea() {
+        // Regresion: stopAll() destruia el encoder nativo mientras el hilo de captura lo usaba.
+        repeat(20) {
+            codec.open()
+            val running = java.util.concurrent.atomic.AtomicBoolean(true)
+            val encoder = Thread {
+                val pcm = tone()
+                while (running.get()) codec.encode(pcm)
+            }.also { it.start() }
+            val decoder = Thread {
+                while (running.get()) codec.decode(null)
+            }.also { it.start() }
+
+            Thread.sleep(10)
+            codec.close()
+            running.set(false)
+            encoder.join(2000)
+            decoder.join(2000)
+            assertTrue(!encoder.isAlive && !decoder.isAlive)
+        }
+    }
 }

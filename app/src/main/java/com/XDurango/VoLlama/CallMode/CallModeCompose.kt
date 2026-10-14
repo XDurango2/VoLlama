@@ -133,6 +133,24 @@ fun CallScreen(
     callState: CallState = CallState.IN_CALL,
     callUiState: CallUiState = CallUiState()
 ) {
+    CallScreenContent(
+        endpointName = endpointName,
+        endpointId = endpointId,
+        callState = callState,
+        callUiState = callUiState,
+        onEvent = viewModel::onCallEvent
+    )
+}
+
+/** Versión sin estado ni ViewModel de [CallScreen]: se puede probar pasándole estado y un callback. */
+@Composable
+fun CallScreenContent(
+    endpointName: String,
+    endpointId: String,
+    callState: CallState,
+    callUiState: CallUiState,
+    onEvent: (CallEvent) -> Unit
+) {
     val initials = if (endpointName.isNotEmpty()) endpointName.take(1).uppercase() else "?"
 
     Scaffold(
@@ -221,7 +239,7 @@ fun CallScreen(
                         label = if (callUiState.isMuted) "Silenciado" else "Silenciar",
                         isActive = callUiState.isMuted,
                         activeColor = MaterialTheme.colorScheme.error,
-                        onClick = { viewModel.onCallEvent(CallEvent.ToggleMute) }
+                        onClick = { onEvent(CallEvent.ToggleMute) }
                     )
 
                     CallControlButton(
@@ -229,7 +247,7 @@ fun CallScreen(
                         label = "Altavoz",
                         isActive = callUiState.isSpeakerOn,
                         activeColor = Color(0xFF4CAF50),
-                        onClick = { viewModel.onCallEvent(CallEvent.ToggleSpeaker) }
+                        onClick = { onEvent(CallEvent.ToggleSpeaker) }
                     )
 
                     CallControlButton(
@@ -245,7 +263,7 @@ fun CallScreen(
                     modifier = Modifier.size(80.dp),
                     shape = CircleShape,
                     color = Color(0xFFF44336),
-                    onClick = { viewModel.onCallEvent(CallEvent.EndCall) }
+                    onClick = { onEvent(CallEvent.EndCall) }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(

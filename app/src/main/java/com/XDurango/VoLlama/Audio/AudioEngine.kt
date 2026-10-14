@@ -12,7 +12,6 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
 import androidx.annotation.RequiresPermission
-import com.steegler.koopus.OpusRepacketizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -55,7 +54,6 @@ class AudioEngine @Inject constructor(
         const val CHANNEL_CONFIG_OUT = AudioFormat.CHANNEL_OUT_MONO
         const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         const val FRAME_SIZE = OpusCodec.FRAME_SIZE_SAMPLES * 2 // 640 bytes = 320 samples = 20ms
-        private const val MAX_OPUS_PACKET_SIZE = 4000 // tamaño máximo de un paquete Opus
         private const val FRAMES_PER_MERGED_PACKET = 2 // 2×20ms → paquete de 40ms
         private const val INCOMING_QUEUE_CAPACITY = 64
     }
@@ -166,13 +164,9 @@ class AudioEngine @Inject constructor(
         withContext(Dispatchers.IO) {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             var record: AudioRecord? = null
-            var repacketizer: OpusRepacketizer? = null
-            var pendingPacket: ByteArray? = null
-            var seq = 0
-
-            fun sendPacket(packet: ByteArray, len: Int = packet.size) {
-                nearbyService.sendAudioFrame(endpointId, seq, packet, len)
-                seq = (seq + 1) and 0xFFFF
+            var encoder: OpusFrameEncoder? = null
+            val sendPacket: PacketSink = { seq, data, len ->
+                nearbyService.sendAudioFrame(endpointId, seq, data, len)
             }
 
             try {
@@ -195,45 +189,30 @@ class AudioEngine @Inject constructor(
                 if (AcousticEchoCanceler.isAvailable())
                     echoCanceler = AcousticEchoCanceler.create(record.audioSessionId)
 
-                repacketizer = OpusRepacketizer.create()
+                encoder = OpusFrameEncoder(opusCodec, RepacketizerMerger())
 
                 val buffer = ByteArray(FRAME_SIZE)
                 val silencePcm = ShortArray(OpusCodec.FRAME_SIZE_SAMPLES)
-                val mergeBuffer = ByteArray(MAX_OPUS_PACKET_SIZE)
 
                 while (isActive && isCapturing.get()) {
                     val read = record.read(buffer, 0, FRAME_SIZE)
                     if (read <= 0) continue
 
                     val pcm = if (isMuted) silencePcm else bytesToShorts(buffer, read)
-                    val packet = opusCodec.encode(pcm) ?: continue
-
-                    val first = pendingPacket
-                    if (first == null) {
-                        pendingPacket = packet
-                        continue
-                    }
-                    pendingPacket = null
-
-                    repacketizer.init()
-                    repacketizer.cat(first)
-                    repacketizer.cat(packet)
-                    val mergedLen = repacketizer.out(mergeBuffer)
-                    if (mergedLen > 0) sendPacket(mergeBuffer, mergedLen)
+                    encoder.encode(pcm, sendPacket)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 onCaptureError?.invoke()
             } finally {
                 isCapturing.set(false)
-                // Frame suelto (20ms) que quedó sin pareja al detener la captura — se manda
-                // sin fusionar para no perder la cola de audio; decodeAggregated() lo soporta igual.
-                pendingPacket?.let { sendPacket(it) }
+                // Frame suelto (20ms) sin pareja al detener la captura: se manda sin fusionar.
+                encoder?.flush(sendPacket)
                 try { record?.stop(); record?.release() } catch (_: Exception) {}
                 audioRecord = null
                 noiseSuppressor?.release(); noiseSuppressor = null
                 echoCanceler?.release(); echoCanceler = null
-                try { repacketizer?.destroy() } catch (_: Exception) {}
+                encoder?.release()
             }
         }
 
@@ -265,29 +244,12 @@ class AudioEngine @Inject constructor(
                 audioTrack = track
                 track.play()
 
-                val maxSamples = OpusCodec.FRAME_SIZE_SAMPLES * FRAMES_PER_MERGED_PACKET
-                var expectedSeq = -1
+                val decoder = OpusFrameDecoder(opusCodec, OpusCodec.FRAME_SIZE_SAMPLES * FRAMES_PER_MERGED_PACKET)
+                val writePcm: (ShortArray) -> Unit = { pcm -> track.write(pcm, 0, pcm.size) }
 
                 while (isActive && isPlaying.get()) {
                     val frame = channel.receiveCatching().getOrNull() ?: break
-                    if (frame.size <= 2) continue
-
-                    val seq = ((frame[0].toInt() and 0xFF) shl 8) or (frame[1].toInt() and 0xFF)
-                    val packet = frame.copyOfRange(2, frame.size)
-
-                    if (expectedSeq >= 0) {
-                        val gap = (seq - expectedSeq) and 0xFFFF
-                        when {
-                            gap in 1..2 -> repeat(gap) {
-                                opusCodec.decode(null)?.let { pcm -> track.write(pcm, 0, pcm.size) }
-                            }
-                            gap > 2 -> opusCodec.resetDecoder()
-                        }
-                    }
-                    expectedSeq = (seq + 1) and 0xFFFF
-
-                    val pcm = opusCodec.decodeAggregated(packet, maxSamples)
-                    if (pcm != null) track.write(pcm, 0, pcm.size)
+                    decoder.decode(frame, writePcm)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
