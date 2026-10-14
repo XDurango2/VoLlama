@@ -45,7 +45,7 @@ class OpusCodec @Inject constructor() {
         // seguimos con los defaults de libopus en vez de romper la llamada completa.
         try {
             OpusTuning(OpusEncoder).apply(OpusProfiles.Default)
-        } catch (e: Exception) {
+        } catch (e: Throwable) { // incluye UnsatisfiedLinkError (es Error, no Exception)
             e.printStackTrace()
         }
     }

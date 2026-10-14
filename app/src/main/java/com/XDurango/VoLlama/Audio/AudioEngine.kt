@@ -10,6 +10,7 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import android.os.Process
 import androidx.annotation.RequiresPermission
 import com.steegler.koopus.OpusRepacketizer
 import kotlinx.coroutines.CoroutineScope
@@ -81,7 +82,7 @@ class AudioEngine @Inject constructor(
     // ── Propiedades mutables desde el coordinador ─────────────────────────────
 
     /** Si es true, se envían frames de silencio en lugar del micrófono. */
-    var isMuted: Boolean = false
+    @Volatile var isMuted: Boolean = false
 
     // ── API pública ───────────────────────────────────────────────────────────
 
@@ -163,15 +164,15 @@ class AudioEngine @Inject constructor(
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     private suspend fun runAudioCapture(endpointId: String) =
         withContext(Dispatchers.IO) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             var record: AudioRecord? = null
             var repacketizer: OpusRepacketizer? = null
             var pendingPacket: ByteArray? = null
             var seq = 0
 
-            fun sendPacket(packet: ByteArray) {
-                val header = byteArrayOf((seq shr 8).toByte(), seq.toByte())
+            fun sendPacket(packet: ByteArray, len: Int = packet.size) {
+                nearbyService.sendAudioFrame(endpointId, seq, packet, len)
                 seq = (seq + 1) and 0xFFFF
-                nearbyService.sendAudioFrame(endpointId, header + packet)
             }
 
             try {
@@ -218,7 +219,7 @@ class AudioEngine @Inject constructor(
                     repacketizer.cat(first)
                     repacketizer.cat(packet)
                     val mergedLen = repacketizer.out(mergeBuffer)
-                    if (mergedLen > 0) sendPacket(mergeBuffer.copyOf(mergedLen))
+                    if (mergedLen > 0) sendPacket(mergeBuffer, mergedLen)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -238,6 +239,7 @@ class AudioEngine @Inject constructor(
 
     private suspend fun runPlayback(channel: Channel<ByteArray>) =
         withContext(Dispatchers.IO) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             var track: AudioTrack? = null
             try {
                 val minBuf = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_OUT, AUDIO_FORMAT)
@@ -257,6 +259,7 @@ class AudioEngine @Inject constructor(
                     )
                     .setBufferSizeInBytes(minBuf.coerceAtLeast(FRAME_SIZE * 8))
                     .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .build()
 
                 audioTrack = track

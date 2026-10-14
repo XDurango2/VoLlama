@@ -20,7 +20,9 @@ import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import com.google.android.gms.common.api.ApiException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -63,6 +65,11 @@ class NearbyConnectionService(private val context: Context) {
         // Tag de 1 byte al inicio de cada Payload.BYTES para distinguir señalización de audio.
         private const val TAG_SIGNAL: Byte = 0x53 // 'S'
         private const val TAG_AUDIO: Byte = 0x41  // 'A'
+
+        private const val MAX_SIGNAL_RETRIES = 3
+        private const val SIGNAL_RETRY_DELAY_MS = 300L
+        private const val MAX_START_RETRIES = 1
+        private const val RETRY_DELAY_MS = 500L
     }
 
     val endpoint = "${Build.MANUFACTURER} - ${Build.MODEL}"
@@ -80,27 +87,73 @@ class NearbyConnectionService(private val context: Context) {
     // ── API de Nearby — main thread directo ───────────────────────────────────
 
     fun startAdvertising(onSuccess: () -> Unit = {}, onFailure: (Exception) -> Unit = {}) {
-        try {
-            connectionsClient.startAdvertising(
-                endpoint, SERVICE_ID,
-                advertisingConnectionCallback, // muestra dialog al usuario
-                AdvertisingOptions.Builder().setStrategy(Strategy.P2P_STAR).build()
-            ).addOnSuccessListener {
-                _nearbyStatus.value = NearbyStatus.ADVERTISING
-                onSuccess()
-            }.addOnFailureListener { onFailure(it) }
-        } catch (e: Exception) { onFailure(e) }
+        startWithRetry(
+            start = {
+                connectionsClient.startAdvertising(
+                    endpoint, SERVICE_ID,
+                    advertisingConnectionCallback, // muestra dialog al usuario
+                    AdvertisingOptions.Builder()
+                        .setStrategy(Strategy.P2P_STAR)
+                        .setLowPower(false) // prioriza velocidad de aparición sobre batería
+                        .build()
+                )
+            },
+            alreadyActive = ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING,
+            status = NearbyStatus.ADVERTISING,
+            onSuccess = onSuccess,
+            onFailure = onFailure
+        )
     }
 
     fun startDiscovery(onSuccess: () -> Unit, onFailure: (Exception) -> Unit) {
+        startWithRetry(
+            start = {
+                connectionsClient.startDiscovery(
+                    SERVICE_ID, endpointDiscoveryCallback,
+                    DiscoveryOptions.Builder()
+                        .setStrategy(Strategy.P2P_STAR)
+                        .setLowPower(false)
+                        .build()
+                )
+            },
+            alreadyActive = ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING,
+            status = NearbyStatus.DISCOVERING,
+            onSuccess = onSuccess,
+            onFailure = onFailure
+        )
+    }
+
+    /**
+     * Lanza start{Advertising,Discovery} tolerando el estado ya activo (se trata como éxito)
+     * y reintentando una vez tras un breve retardo ante errores transitorios del radio,
+     * frecuentes en algunos dispositivos justo después de un stop*().
+     */
+    private fun startWithRetry(
+        start: () -> com.google.android.gms.tasks.Task<Void>,
+        alreadyActive: Int,
+        status: NearbyStatus,
+        onSuccess: () -> Unit,
+        onFailure: (Exception) -> Unit,
+        attempt: Int = 0
+    ) {
         try {
-            connectionsClient.startDiscovery(
-                SERVICE_ID, endpointDiscoveryCallback,
-                DiscoveryOptions.Builder().setStrategy(Strategy.P2P_STAR).build()
-            ).addOnSuccessListener {
-                _nearbyStatus.value = NearbyStatus.DISCOVERING
+            start().addOnSuccessListener {
+                _nearbyStatus.value = status
                 onSuccess()
-            }.addOnFailureListener { onFailure(it) }
+            }.addOnFailureListener { e ->
+                val code = (e as? ApiException)?.statusCode
+                when {
+                    code == alreadyActive -> {
+                        _nearbyStatus.value = status
+                        onSuccess()
+                    }
+                    attempt < MAX_START_RETRIES -> serviceScope.launch {
+                        delay(RETRY_DELAY_MS)
+                        startWithRetry(start, alreadyActive, status, onSuccess, onFailure, attempt + 1)
+                    }
+                    else -> onFailure(e)
+                }
+            }
         } catch (e: Exception) { onFailure(e) }
     }
 
@@ -143,20 +196,46 @@ class NearbyConnectionService(private val context: Context) {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
+    /**
+     * Envía una señal de control. sendPayload puede fallar de forma transitoria (p. ej. justo
+     * tras conectar), así que se reintenta; el id permite al receptor descartar duplicados.
+     */
     fun sendCallSignal(endpointId: String, signal: ConnectionSignalsTypes) {
         try {
-            val json = Gson().toJson(
+            val json = gson.toJson(
                 ConnectionSignal(type = signal, senderId = "", senderName = endpoint)
             )
-            val payload = byteArrayOf(TAG_SIGNAL) + json.toByteArray()
-            connectionsClient.sendPayload(endpointId, Payload.fromBytes(payload))
+            sendSignalBytes(endpointId, byteArrayOf(TAG_SIGNAL) + json.toByteArray(), 0)
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    /** Envía un frame de audio Opus (ya codificado) como Payload.BYTES. */
-    fun sendAudioFrame(endpointId: String, frame: ByteArray) {
+    private fun sendSignalBytes(endpointId: String, bytes: ByteArray, attempt: Int) {
         try {
-            val payload = byteArrayOf(TAG_AUDIO) + frame
+            connectionsClient.sendPayload(endpointId, Payload.fromBytes(bytes))
+                .addOnFailureListener {
+                    if (attempt < MAX_SIGNAL_RETRIES && endpointId in connectedIds()) {
+                        serviceScope.launch {
+                            delay(SIGNAL_RETRY_DELAY_MS)
+                            sendSignalBytes(endpointId, bytes, attempt + 1)
+                        }
+                    }
+                }
+        } catch (e: Exception) { e.printStackTrace() }
+    }
+
+    private fun connectedIds() = _connectedEndpoints.value.map { it.first }.toSet()
+
+    /**
+     * Envía un paquete Opus ya codificado como Payload.BYTES: [TAG_AUDIO][seq 2 bytes][opus].
+     * Se arma en una sola asignación (se ejecuta ~25 veces/seg durante una llamada).
+     */
+    fun sendAudioFrame(endpointId: String, seq: Int, opus: ByteArray, opusLen: Int = opus.size) {
+        try {
+            val payload = ByteArray(3 + opusLen)
+            payload[0] = TAG_AUDIO
+            payload[1] = (seq shr 8).toByte()
+            payload[2] = seq.toByte()
+            System.arraycopy(opus, 0, payload, 3, opusLen)
             connectionsClient.sendPayload(endpointId, Payload.fromBytes(payload))
         } catch (e: Exception) { e.printStackTrace() }
     }
@@ -253,6 +332,19 @@ class NearbyConnectionService(private val context: Context) {
         callManager?.onRemoteCallEnded()
     }
 
+    private val gson = Gson()
+
+    private val seenSignalIds = ArrayDeque<String>()
+
+    /** @return false si la señal ya se procesó (reintento duplicado). */
+    private fun markSignalSeen(id: String?): Boolean {
+        if (id == null) return true // peer antiguo sin id
+        if (id in seenSignalIds) return false
+        seenSignalIds.addLast(id)
+        if (seenSignalIds.size > 32) seenSignalIds.removeFirst()
+        return true
+    }
+
     // ── Callback de payloads ──────────────────────────────────────────────────
 
     private val payloadCallback = object : PayloadCallback() {
@@ -269,9 +361,11 @@ class NearbyConnectionService(private val context: Context) {
                             }
                             TAG_SIGNAL -> {
                                 val json = String(bytes, 1, bytes.size - 1)
-                                val signal = Gson()
+                                val signal = gson
                                     .fromJson(json, ConnectionSignal::class.java)
                                     .copy(senderId = endpointId)
+
+                                if (!markSignalSeen(signal.id)) return
 
                                 when (signal.type) {
                                     ConnectionSignalsTypes.INCOMING_CALL,
@@ -324,7 +418,8 @@ class NearbyConnectionService(private val context: Context) {
         val type: ConnectionSignalsTypes,
         val senderId: String,
         val senderName: String,
-        val timestamp: Long = System.currentTimeMillis()
+        val timestamp: Long = System.currentTimeMillis(),
+        val id: String? = java.util.UUID.randomUUID().toString()
     )
 
     data class DiscoveredEndpoint(
@@ -336,6 +431,5 @@ class NearbyConnectionService(private val context: Context) {
 
     fun cleanup() {
         disconnectFromAll()
-        serviceScope.cancel()
     }
 }
