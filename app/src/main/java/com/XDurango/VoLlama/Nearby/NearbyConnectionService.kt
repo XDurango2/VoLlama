@@ -68,6 +68,8 @@ class NearbyConnectionService(private val context: Context) {
 
         private const val MAX_SIGNAL_RETRIES = 3
         private const val SIGNAL_RETRY_DELAY_MS = 300L
+        // Debe superar el timeout del diálogo de aceptación (7 s) más el handshake de radio.
+        private const val HANDSHAKE_TIMEOUT_MS = 20_000L
         private const val MAX_START_RETRIES = 1
         private const val RETRY_DELAY_MS = 500L
 
@@ -80,6 +82,33 @@ class NearbyConnectionService(private val context: Context) {
 
     private var callManager: CallManager? = null
     private val pendingConnectionInfo = mutableMapOf<String, ConnectionInfo>()
+    private val handshakeWatchdogs = mutableMapOf<String, kotlinx.coroutines.Job>()
+
+    /**
+     * Si el handshake no resuelve (el otro lado nunca muestra el popup, se pierde el radio...),
+     * Nearby no avisa por sí solo: la UI quedaba esperando y el endpoint a medias.
+     */
+    private fun startHandshakeWatchdog(endpointId: String) {
+        handshakeWatchdogs.remove(endpointId)?.cancel()
+        handshakeWatchdogs[endpointId] = serviceScope.launch {
+            delay(HANDSHAKE_TIMEOUT_MS)
+            handshakeWatchdogs.remove(endpointId)
+            if (endpointId !in connectedIds()) {
+                try { connectionsClient.disconnectFromEndpoint(endpointId) } catch (e: Exception) { e.printStackTrace() }
+                pendingConnectionInfo.remove(endpointId)
+                clearDialogFor(endpointId)
+                _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
+            }
+        }
+    }
+
+    private fun cancelHandshakeWatchdog(endpointId: String) {
+        handshakeWatchdogs.remove(endpointId)?.cancel()
+    }
+
+    private fun clearDialogFor(endpointId: String) {
+        if (_showConnectionDialog.value?.first == endpointId) _showConnectionDialog.value = null
+    }
 
     // ── Coordinator ───────────────────────────────────────────────────────────
 
@@ -109,6 +138,8 @@ class NearbyConnectionService(private val context: Context) {
     }
 
     fun startDiscovery(onSuccess: () -> Unit, onFailure: (Exception) -> Unit) {
+        // Una sesión nueva no debe heredar endpoints (con IDs ya inválidos) de la anterior.
+        _discoveredEndpoints.value = emptyList()
         startWithRetry(
             start = {
                 connectionsClient.startDiscovery(
@@ -161,6 +192,8 @@ class NearbyConnectionService(private val context: Context) {
     }
 
     fun stopDiscovery() {
+        // Al detener la búsqueda Nearby ya no emite onEndpointLost: la lista quedaría obsoleta.
+        _discoveredEndpoints.value = emptyList()
         try { connectionsClient.stopDiscovery() } catch (e: Exception) { e.printStackTrace() }
     }
 
@@ -191,12 +224,14 @@ class NearbyConnectionService(private val context: Context) {
     }
 
     fun requestConnection(endpointId: String) {
+        startHandshakeWatchdog(endpointId)
         try {
             connectionsClient.requestConnection(
                 endpoint, endpointId,
                 discoveryConnectionCallback // auto-acepta sin dialog
             ).addOnFailureListener { e ->
                 _showConnectionDialog.value = null
+                cancelHandshakeWatchdog(endpointId)
                 // Sin esto la UI se queda esperando: el fallo (radio, BT, timeout) era silencioso.
                 if ((e as? ApiException)?.statusCode != ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT) {
                     _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
@@ -227,6 +262,11 @@ class NearbyConnectionService(private val context: Context) {
                             delay(SIGNAL_RETRY_DELAY_MS)
                             sendSignalBytes(endpointId, bytes, attempt + 1)
                         }
+                    } else if (endpointId in connectedIds()) {
+                        // La señal no sale tras varios intentos: el enlace está roto aunque Nearby no lo
+                        // haya notificado. Se cierra para que la UI y la llamada lo reflejen.
+                        disconnectFromEndpoint(endpointId)
+                        _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
                     }
                 }
         } catch (e: Exception) { e.printStackTrace() }
@@ -274,6 +314,8 @@ class NearbyConnectionService(private val context: Context) {
             _connectedEndpoints.value = emptySet()
             _discoveredEndpoints.value = emptyList()
             pendingConnectionInfo.clear()
+            handshakeWatchdogs.values.forEach { it.cancel() }
+            handshakeWatchdogs.clear()
             clearIncomingCallSignal()
         }
     }
@@ -287,6 +329,7 @@ class NearbyConnectionService(private val context: Context) {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             _nearbyStatus.value = NearbyStatus.IN_PROGRESS
             pendingConnectionInfo[endpointId] = connectionInfo
+            startHandshakeWatchdog(endpointId)
             acceptConnection(endpointId)
         }
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
@@ -302,6 +345,7 @@ class NearbyConnectionService(private val context: Context) {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             _nearbyStatus.value = NearbyStatus.IN_PROGRESS
             pendingConnectionInfo[endpointId] = connectionInfo
+            startHandshakeWatchdog(endpointId)
             _showConnectionDialog.value = endpointId to connectionInfo
         }
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
@@ -315,13 +359,20 @@ class NearbyConnectionService(private val context: Context) {
     // ── Lógica compartida de callbacks ────────────────────────────────────────
 
     private fun handleConnectionResult(endpointId: String, result: ConnectionResolution) {
+        cancelHandshakeWatchdog(endpointId)
+        clearDialogFor(endpointId)
         when (result.status.statusCode) {
             ConnectionsStatusCodes.STATUS_OK -> {
                 stopDiscovery()
                 stopAdvertising()
-                _nearbyStatus.value = NearbyStatus.CONNECTION_SUCCESS
-                pendingConnectionInfo.remove(endpointId)?.let { info ->
+                val info = pendingConnectionInfo.remove(endpointId)
+                if (info != null) {
+                    _nearbyStatus.value = NearbyStatus.CONNECTION_SUCCESS
                     _connectedEndpoints.update { it + (endpointId to info) }
+                } else {
+                    // Conectado en Nearby pero invisible para la app: enlace "roto". Mejor cortarlo y avisar.
+                    try { connectionsClient.disconnectFromEndpoint(endpointId) } catch (e: Exception) { e.printStackTrace() }
+                    _nearbyStatus.value = NearbyStatus.CONNECTION_ERROR
                 }
             }
             ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
@@ -344,6 +395,9 @@ class NearbyConnectionService(private val context: Context) {
     }
 
     private fun handleDisconnected(endpointId: String) {
+        cancelHandshakeWatchdog(endpointId)
+        clearDialogFor(endpointId)
+        pendingConnectionInfo.remove(endpointId)
         _connectedEndpoints.update { it.filterNot { ep -> ep.first == endpointId }.toSet() }
         if (_connectedEndpoints.value.isEmpty()) _nearbyStatus.value = NearbyStatus.IDLE
         // Solo cuelga si se cayó el endpoint de la llamada, no cualquier otro dispositivo cercano.

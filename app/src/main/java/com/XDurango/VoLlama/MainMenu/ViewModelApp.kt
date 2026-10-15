@@ -42,7 +42,7 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
         when (event) {
 
             MainEvent.StartConnection -> {
-                _uiState.update { it.copy(showBottomSheet = true) }
+                _uiState.update { it.copy(showBottomSheet = true, selectedIndex = 0) }
                 startDiscovery()
             }
 
@@ -85,7 +85,8 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
     // ---------------- NEARBY CONTROL ----------------
 
     private fun restartConnection(){
-        nearbyService.cleanup()
+        // Solo se invoca desde el modo discovery; no corta conexiones activas.
+        stopDiscovery()
         startDiscovery()
     }
 
