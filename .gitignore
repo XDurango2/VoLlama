@@ -31,3 +31,7 @@ local.properties
 
 # Claude Code
 CLAUDE.md
+
+# Salidas de las pruebas E2E con dispositivos reales
+scripts/e2e/runs/
+scripts/e2e/__pycache__/

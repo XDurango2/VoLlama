@@ -56,6 +56,9 @@ class AudioEngine @Inject constructor(
         const val FRAME_SIZE = OpusCodec.FRAME_SIZE_SAMPLES * 2 // 640 bytes = 320 samples = 20ms
         private const val FRAMES_PER_MERGED_PACKET = 2 // 2×20ms → paquete de 40ms
         private const val INCOMING_QUEUE_CAPACITY = 64
+
+        /** Frames de 20ms que caben en el buffer del AudioTrack: más buffer = más delay percibido. */
+        private const val PLAYBACK_BUFFER_FRAMES = 3 // 60ms; cabe un paquete de 40ms con margen
     }
 
     // ── Estado interno ────────────────────────────────────────────────────────
@@ -236,7 +239,7 @@ class AudioEngine @Inject constructor(
                             .setChannelMask(CHANNEL_CONFIG_OUT)
                             .build()
                     )
-                    .setBufferSizeInBytes(minBuf.coerceAtLeast(FRAME_SIZE * 8))
+                    .setBufferSizeInBytes(minBuf.coerceAtLeast(FRAME_SIZE * PLAYBACK_BUFFER_FRAMES))
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                     .build()

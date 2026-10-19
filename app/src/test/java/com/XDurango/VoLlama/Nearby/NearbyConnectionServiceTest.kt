@@ -576,6 +576,216 @@ class NearbyConnectionServiceTest {
         verify(exactly = 0) { callManager.onRemoteCallEnded() }
     }
 
+    // ── Desconexion y limpieza ────────────────────────────────────────────────
+
+    @Test
+    fun `desconectar el ultimo endpoint vuelve a IDLE`() {
+        connect()
+        service.disconnectFromEndpoint(ENDPOINT)
+
+        assertTrue(service.connectedEndpoints.value.isEmpty())
+        assertEquals(NearbyStatus.IDLE, service.nearbyMode.value)
+        verify { client.disconnectFromEndpoint(ENDPOINT) }
+    }
+
+    @Test
+    fun `desconectar un endpoint no tumba el estado mientras quede otro conectado`() {
+        connect("a")
+        connect("b")
+        service.disconnectFromEndpoint("a")
+
+        assertEquals(setOf("b"), service.connectedEndpoints.value.map { it.first }.toSet())
+        assertEquals(NearbyStatus.CONNECTION_SUCCESS, service.nearbyMode.value)
+    }
+
+    @Test
+    fun `si el cliente falla al desconectar el endpoint se saca igual de la lista`() {
+        connect()
+        every { client.disconnectFromEndpoint(any()) } throws IllegalStateException("boom")
+
+        service.disconnectFromEndpoint(ENDPOINT)
+
+        assertTrue(service.connectedEndpoints.value.isEmpty())
+        assertEquals(NearbyStatus.IDLE, service.nearbyMode.value)
+    }
+
+    @Test
+    fun `disconnectFromAll limpia conectados, descubiertos y senal pendiente`() {
+        val cb = connect()
+        found(startDiscoveryCapturing(), "visto")
+        cb.receive(signalBytes(ConnectionSignalsTypes.INCOMING_CALL))
+        assertNotNull(service.receivedSignals.value)
+
+        service.disconnectFromAll()
+
+        assertTrue(service.connectedEndpoints.value.isEmpty())
+        assertTrue(service.discoveredEndpoints.value.isEmpty())
+        assertNull(service.receivedSignals.value)
+        verify { client.stopAllEndpoints() }
+    }
+
+    @Test
+    fun `disconnectFromAll cancela los handshakes en curso`() {
+        service.requestConnection(ENDPOINT)
+        service.disconnectFromAll()
+
+        dispatcher.scheduler.advanceTimeBy(30_000)
+        dispatcher.scheduler.runCurrent()
+
+        assertEquals(NearbyStatus.IDLE, service.nearbyMode.value)
+        verify(exactly = 0) { client.disconnectFromEndpoint(any()) }
+    }
+
+    @Test
+    fun `cleanup corta todas las conexiones`() {
+        connect()
+        service.cleanup()
+
+        assertTrue(service.connectedEndpoints.value.isEmpty())
+        verify { client.stopAllEndpoints() }
+    }
+
+    // ── Aceptar / rechazar desde el popup ─────────────────────────────────────
+
+    @Test
+    fun `aceptar la conexion cierra el popup y se lo pide a Nearby`() {
+        val advertising = startAdvertisingCapturing()
+        advertising.onConnectionInitiated(ENDPOINT, mockk(relaxed = true))
+        assertNotNull(service.showConnectionDialog.value)
+
+        service.acceptConnection(ENDPOINT)
+
+        assertNull(service.showConnectionDialog.value)
+        verify { client.acceptConnection(ENDPOINT, any()) }
+    }
+
+    @Test
+    fun `si Nearby falla al aceptar el popup no queda colgado`() {
+        val advertising = startAdvertisingCapturing()
+        advertising.onConnectionInitiated(ENDPOINT, mockk(relaxed = true))
+        every { client.acceptConnection(any(), any()) } returns failedTask(ConnectionsStatusCodes.STATUS_ERROR)
+
+        service.acceptConnection(ENDPOINT)
+
+        assertNull(service.showConnectionDialog.value)
+    }
+
+    @Test
+    fun `rechazar la conexion cierra el popup y se lo comunica a Nearby`() {
+        val advertising = startAdvertisingCapturing()
+        advertising.onConnectionInitiated(ENDPOINT, mockk(relaxed = true))
+
+        service.rejectConnection(ENDPOINT)
+
+        assertNull(service.showConnectionDialog.value)
+        verify { client.rejectConnection(ENDPOINT) }
+    }
+
+    // ── Discovery ─────────────────────────────────────────────────────────────
+
+    @Test
+    fun `un endpoint encontrado dos veces aparece una sola vez y al perderse se quita`() {
+        val discovery = startDiscoveryCapturing()
+        found(discovery, "x")
+        found(discovery, "x")
+        assertEquals(1, service.discoveredEndpoints.value.size)
+
+        discovery.onEndpointLost("x")
+        assertTrue(service.discoveredEndpoints.value.isEmpty())
+    }
+
+    @Test
+    fun `perder un endpoint desconocido no rompe la lista`() {
+        val discovery = startDiscoveryCapturing()
+        found(discovery, "x")
+
+        discovery.onEndpointLost("otro")
+
+        assertEquals(listOf("x"), service.discoveredEndpoints.value.map { it.first })
+    }
+
+    // ── Resultados de conexion poco comunes ───────────────────────────────────
+
+    @Test
+    fun `STATUS_ALREADY_CONNECTED_TO_ENDPOINT registra el endpoint como conectado`() {
+        connect(statusCode = ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT)
+
+        assertEquals(NearbyStatus.CONNECTION_SUCCESS, service.nearbyMode.value)
+        assertTrue(service.connectedEndpoints.value.any { it.first == ENDPOINT })
+    }
+
+    @Test
+    fun `requestConnection a un endpoint ya conectado no se marca como error`() {
+        every { client.requestConnection(any<String>(), any(), any()) } returns
+            failedTask(ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT)
+
+        service.requestConnection(ENDPOINT)
+
+        assertEquals(NearbyStatus.IDLE, service.nearbyMode.value)
+    }
+
+    // ── Rachas de fallos de payload ───────────────────────────────────────────
+
+    private fun PayloadCallback.transfer(status: Int, from: String = ENDPOINT) =
+        onPayloadTransferUpdate(from, PayloadTransferUpdate.Builder().setStatus(status).build())
+
+    @Test
+    fun `una racha de 10 fallos seguidos del endpoint de la llamada la termina`() {
+        val cb = connect()
+        repeat(9) { cb.payload.transfer(PayloadTransferUpdate.Status.FAILURE) }
+        verify(exactly = 0) { callManager.onRemoteCallEnded() }
+
+        cb.payload.transfer(PayloadTransferUpdate.Status.FAILURE)
+
+        verify(exactly = 1) { callManager.onRemoteCallEnded() }
+    }
+
+    @Test
+    fun `un envio exitoso reinicia la racha de fallos`() {
+        val cb = connect()
+        repeat(9) { cb.payload.transfer(PayloadTransferUpdate.Status.FAILURE) }
+        cb.payload.transfer(PayloadTransferUpdate.Status.SUCCESS)
+        repeat(9) { cb.payload.transfer(PayloadTransferUpdate.Status.FAILURE) }
+
+        verify(exactly = 0) { callManager.onRemoteCallEnded() }
+    }
+
+    @Test
+    fun `los fallos de otro endpoint no cuentan para la llamada`() {
+        val cb = connect()
+        repeat(30) { cb.payload.transfer(PayloadTransferUpdate.Status.FAILURE, from = "otro") }
+
+        verify(exactly = 0) { callManager.onRemoteCallEnded() }
+    }
+
+    // ── Payloads invalidos ────────────────────────────────────────────────────
+
+    @Test
+    fun `payload vacio o con tag desconocido se ignora`() {
+        val cb = connect()
+        cb.receive(byteArrayOf())
+        cb.receive(byteArrayOf(0x7F, 1, 2, 3))
+
+        verify(exactly = 0) { callManager.onIncomingAudioFrame(any()) }
+        assertNull(service.receivedSignals.value)
+    }
+
+    @Test
+    fun `payloads de tipo STREAM o FILE se ignoran sin romper el servicio`() {
+        val cb = connect()
+        cb.payload.onPayloadReceived(ENDPOINT, mockk<Payload>(relaxed = true) { every { type } returns Payload.Type.STREAM })
+        cb.payload.onPayloadReceived(ENDPOINT, mockk<Payload>(relaxed = true) { every { type } returns Payload.Type.FILE })
+
+        verify(exactly = 0) { callManager.onIncomingAudioFrame(any()) }
+    }
+
+    @Test
+    fun `si sendPayload lanza al enviar audio el servicio no se cae`() {
+        every { client.sendPayload(any<String>(), any()) } throws IllegalStateException("boom")
+
+        service.sendAudioFrame(ENDPOINT, seq = 1, opus = byteArrayOf(1, 2))
+    }
+
     private companion object {
         const val ENDPOINT = "endpoint-1"
     }

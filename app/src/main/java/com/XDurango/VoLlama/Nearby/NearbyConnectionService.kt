@@ -125,7 +125,7 @@ class NearbyConnectionService(private val context: Context) {
                     endpoint, SERVICE_ID,
                     advertisingConnectionCallback, // muestra dialog al usuario
                     AdvertisingOptions.Builder()
-                        .setStrategy(Strategy.P2P_STAR)
+                        .setStrategy(Strategy.P2P_POINT_TO_POINT)
                         .setLowPower(false) // prioriza velocidad de aparición sobre batería
                         .build()
                 )
@@ -145,7 +145,7 @@ class NearbyConnectionService(private val context: Context) {
                 connectionsClient.startDiscovery(
                     SERVICE_ID, endpointDiscoveryCallback,
                     DiscoveryOptions.Builder()
-                        .setStrategy(Strategy.P2P_STAR)
+                        .setStrategy(Strategy.P2P_POINT_TO_POINT)
                         .setLowPower(false)
                         .build()
                 )

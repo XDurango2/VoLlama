@@ -320,6 +320,127 @@ class CallManagerTest {
         verify(exactly = 0) { audio.startCapture(any(), any()) }
     }
 
+    @Test
+    fun `walkie-talkie saliente avisa al remoto y al aceptar solo reproduce hasta presionar PTT`() {
+        manager.startWalkieTalkieMode(isIncoming = false)
+        idle()
+        verify { nearby.sendCallSignal(ENDPOINT, ConnectionSignalsTypes.INCOMING_WALKIE_TALKIE) }
+        assertEquals(CallState.CONNECTING, manager.callState.value)
+
+        manager.onRemoteCallAccepted()
+        idle()
+
+        assertEquals(CallState.IN_CALL, manager.callState.value)
+        verify(exactly = 1) { audio.startPlayback(any()) }
+        verify(exactly = 0) { audio.startCapture(any(), any()) }
+
+        manager.onWalkieTalkieEvent(WalkieTalkieEvent.PressToTalk)
+        idle()
+        verify(exactly = 1) { audio.startCapture(ENDPOINT, any()) }
+    }
+
+    // ── Casos de borde del ciclo de vida ──────────────────────────────────────
+
+    @Test
+    fun `AnswerCall repetido no arranca el audio dos veces`() {
+        manager.onCallEvent(CallEvent.AnswerCall)
+        manager.onCallEvent(CallEvent.AnswerCall)
+        idle()
+
+        verify(exactly = 1) { audio.startCapture(ENDPOINT, any()) }
+        verify(exactly = 1) { audio.startPlayback(any()) }
+    }
+
+    @Test
+    fun `colgar dos veces seguidas es idempotente`() {
+        manager.onCallEvent(CallEvent.AnswerCall)
+        idle()
+        manager.onCallEvent(CallEvent.EndCall)
+        manager.onCallEvent(CallEvent.EndCall)
+        idle()
+
+        assertEquals(CallState.ENDED, manager.callState.value)
+        assertFalse(manager.callUiState.value.isInCall)
+    }
+
+    @Test
+    fun `colgar el remoto dos veces seguidas es idempotente`() {
+        manager.onCallEvent(CallEvent.AnswerCall)
+        idle()
+        manager.onRemoteCallEnded()
+        manager.onRemoteCallEnded()
+        idle()
+
+        assertEquals(CallState.ENDED, manager.callState.value)
+    }
+
+    @Test
+    fun `un error de microfono avisa al remoto de que la llamada termino`() {
+        val callback = slot<() -> Unit>()
+        verify { audio.onCaptureError = capture(callback) }
+        manager.onCallEvent(CallEvent.AnswerCall)
+        idle()
+
+        callback.captured.invoke()
+        idle()
+
+        verify { nearby.sendCallSignal(ENDPOINT, ConnectionSignalsTypes.CALL_ENDED) }
+    }
+
+    @Test
+    fun `al terminar la reproduccion remota deja de marcarse como recibiendo`() {
+        val callback = slot<() -> Unit>()
+        verify { audio.onPlaybackEnded = capture(callback) }
+        manager.onCallEvent(CallEvent.AnswerCall)
+        idle()
+        manager.onIncomingAudioFrame(byteArrayOf(1))
+        assertTrue(manager.walkieTalkieUiState.value.isReceiving)
+
+        callback.captured.invoke()
+
+        assertFalse(manager.walkieTalkieUiState.value.isReceiving)
+    }
+
+    // ── Conexion con varios dispositivos ──────────────────────────────────────
+
+    @Test
+    fun `perder la conexion sin llamada activa no toca el audio`() {
+        connected.value = emptySet()
+        idle()
+
+        assertEquals(CallState.IDLE, manager.callState.value)
+        verify(exactly = 0) { audio.stopAll() }
+    }
+
+    @Test
+    fun `que se desconecte otro dispositivo no cuelga la llamada activa`() {
+        val info = mockk<ConnectionInfo>()
+        connected.value = setOf(ENDPOINT to info, "otro" to info)
+        manager.onCallEvent(CallEvent.AnswerCall)
+        idle()
+
+        connected.value = setOf(ENDPOINT to info)
+        idle()
+
+        assertEquals(CallState.IN_CALL, manager.callState.value)
+        verify(exactly = 0) { audio.stopAll() }
+    }
+
+    // ── Audio entrante fuera de llamada ───────────────────────────────────────
+
+    @Test
+    fun `frames recibidos sin llamada no se acumulan para la siguiente`() {
+        manager.onIncomingAudioFrame(byteArrayOf(1))
+        manager.onIncomingAudioFrame(byteArrayOf(2))
+
+        manager.onCallEvent(CallEvent.StartCall)
+        idle()
+        manager.onRemoteCallAccepted()
+        idle()
+
+        verify(exactly = 0) { audio.feedIncomingAudioFrame(any()) }
+    }
+
     private companion object {
         const val ENDPOINT = "endpoint-1"
     }

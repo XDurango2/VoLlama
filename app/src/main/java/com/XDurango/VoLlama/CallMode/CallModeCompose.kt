@@ -250,12 +250,12 @@ fun CallScreenContent(
                         onClick = { onEvent(CallEvent.ToggleSpeaker) }
                     )
 
-                    CallControlButton(
-                        icon = Icons.Outlined.Add,
-                        label = "Añadir",
-                        isActive = false,
-                        onClick = { /* TODO: conferencia */ }
-                    )
+//                    CallControlButton(
+//                        icon = Icons.Outlined.Add,
+//                        label = "Añadir",
+//                        isActive = false,
+//                        onClick = { /* TODO: conferencia */ }
+//                    )
                 }
 
                 // Botón de colgar

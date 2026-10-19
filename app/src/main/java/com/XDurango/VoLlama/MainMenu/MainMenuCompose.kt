@@ -424,20 +424,20 @@ fun ConnectedDeviceCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                FilledTonalButton(
-                    onClick = onWalkieTalkieMode,
-                    modifier = Modifier.weight(1f),
-                    shape = MaterialTheme.shapes.medium,
-                    contentPadding = PaddingValues(vertical = 12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.ConnectWithoutContact,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Walkie")
-                }
+//                FilledTonalButton(
+//                    onClick = onWalkieTalkieMode,
+//                    modifier = Modifier.weight(1f),
+//                    shape = MaterialTheme.shapes.medium,
+//                    contentPadding = PaddingValues(vertical = 12.dp)
+//                ) {
+//                    Icon(
+//                        imageVector = Icons.Outlined.ConnectWithoutContact,
+//                        contentDescription = null,
+//                        modifier = Modifier.size(20.dp)
+//                    )
+//                    Spacer(modifier = Modifier.width(8.dp))
+//                    Text("Walkie")
+//                }
 
                 Button(
                     onClick = onCallMode,
