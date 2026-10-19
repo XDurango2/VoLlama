@@ -15,6 +15,8 @@ import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
 import com.google.android.gms.nearby.connection.ConnectionResolution
 import com.google.android.gms.nearby.connection.ConnectionsClient
 import com.google.android.gms.nearby.connection.ConnectionsStatusCodes
+import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
+import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
 import com.google.android.gms.nearby.connection.Payload
 import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
@@ -34,6 +36,7 @@ import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -219,6 +222,210 @@ class NearbyConnectionServiceTest {
         cb.lifecycle.onDisconnected("otro-dispositivo")
 
         verify(exactly = 0) { callManager.onRemoteCallEnded() }
+    }
+
+    // ── Estado obsoleto entre intentos de conexion ────────────────────────────
+
+    /** Arranca discovery y devuelve el callback para simular endpoints encontrados/perdidos. */
+    private fun startDiscoveryCapturing(): EndpointDiscoveryCallback {
+        val cb = slot<EndpointDiscoveryCallback>()
+        every { client.startDiscovery(any(), capture(cb), any()) } returns completedTask()
+        service.startDiscovery(onSuccess = {}, onFailure = {})
+        return cb.captured
+    }
+
+    private fun found(cb: EndpointDiscoveryCallback, id: String) =
+        cb.onEndpointFound(id, mockk<DiscoveredEndpointInfo>(relaxed = true))
+
+    @Test
+    fun `BUG al detener discovery la lista de dispositivos descubiertos se vacia`() {
+        // Tras conectar se llama stopDiscovery y Nearby ya no emite onEndpointLost: la lista
+        // conservaba los endpoints (con IDs ya invalidos) del primer intento.
+        val discovery = startDiscoveryCapturing()
+        found(discovery, "viejo-1")
+        assertEquals(1, service.discoveredEndpoints.value.size)
+
+        service.stopDiscovery()
+
+        assertTrue(service.discoveredEndpoints.value.isEmpty())
+    }
+
+    @Test
+    fun `BUG conectar y reconectar no arrastra los dispositivos del primer intento`() {
+        val first = startDiscoveryCapturing()
+        found(first, "viejo-1")
+        connect("viejo-1") // handleConnectionResult(OK) detiene discovery
+        service.disconnectFromEndpoint("viejo-1")
+
+        val second = startDiscoveryCapturing()
+        assertTrue(service.discoveredEndpoints.value.isEmpty())
+        found(second, "nuevo-2")
+
+        assertEquals(listOf("nuevo-2"), service.discoveredEndpoints.value.map { it.first })
+    }
+
+    @Test
+    fun `startDiscovery descarta endpoints de una sesion previa sin stop intermedio`() {
+        found(startDiscoveryCapturing(), "viejo-1")
+
+        startDiscoveryCapturing()
+
+        assertTrue(service.discoveredEndpoints.value.isEmpty())
+    }
+
+    // ── Handshake que no termina ──────────────────────────────────────────────
+
+    @Test
+    fun `BUG si el otro lado nunca responde el handshake expira con CONNECTION_ERROR`() {
+        // Sintoma: presionas conectar y el popup no aparece en el otro dispositivo. Nearby no avisa.
+        service.requestConnection(ENDPOINT)
+
+        dispatcher.scheduler.advanceTimeBy(20_001)
+        dispatcher.scheduler.runCurrent()
+
+        assertEquals(NearbyStatus.CONNECTION_ERROR, service.nearbyMode.value)
+        verify { client.disconnectFromEndpoint(ENDPOINT) }
+    }
+
+    @Test
+    fun `el handshake no expira antes del plazo`() {
+        service.requestConnection(ENDPOINT)
+
+        dispatcher.scheduler.advanceTimeBy(19_000)
+        dispatcher.scheduler.runCurrent()
+
+        assertTrue(service.nearbyMode.value != NearbyStatus.CONNECTION_ERROR)
+        verify(exactly = 0) { client.disconnectFromEndpoint(any()) }
+    }
+
+    @Test
+    fun `una conexion exitosa cancela el watchdog y no se marca error despues`() {
+        connect()
+
+        dispatcher.scheduler.advanceTimeBy(30_000)
+        dispatcher.scheduler.runCurrent()
+
+        assertEquals(NearbyStatus.CONNECTION_SUCCESS, service.nearbyMode.value)
+        assertTrue(service.connectedEndpoints.value.any { it.first == ENDPOINT })
+        verify(exactly = 0) { client.disconnectFromEndpoint(any()) }
+    }
+
+    @Test
+    fun `un fallo inmediato de requestConnection cancela el watchdog`() {
+        every { client.requestConnection(any<String>(), any(), any()) } returns
+            failedTask(ConnectionsStatusCodes.STATUS_RADIO_ERROR)
+        service.requestConnection(ENDPOINT)
+        service.resetStatus()
+
+        dispatcher.scheduler.advanceTimeBy(30_000)
+        dispatcher.scheduler.runCurrent()
+
+        assertEquals(NearbyStatus.IDLE, service.nearbyMode.value)
+    }
+
+    @Test
+    fun `STATUS_OK sin info pendiente corta el enlace en vez de dejarlo a medias`() {
+        // Conectado en Nearby pero invisible para la app => "conexion rota": sin audio ni llamadas.
+        val lifecycle = slot<ConnectionLifecycleCallback>()
+        every { client.requestConnection(any<String>(), any(), capture(lifecycle)) } returns completedTask()
+        service.requestConnection(ENDPOINT)
+
+        lifecycle.captured.onConnectionResult(ENDPOINT, resolution(ConnectionsStatusCodes.STATUS_OK))
+
+        assertTrue(service.connectedEndpoints.value.isEmpty())
+        assertEquals(NearbyStatus.CONNECTION_ERROR, service.nearbyMode.value)
+        verify { client.disconnectFromEndpoint(ENDPOINT) }
+    }
+
+    // ── Popup de aceptacion (advertiser) ──────────────────────────────────────
+
+    private fun startAdvertisingCapturing(): ConnectionLifecycleCallback {
+        val cb = slot<ConnectionLifecycleCallback>()
+        every { client.startAdvertising(any<String>(), any(), capture(cb), any()) } returns completedTask()
+        service.startAdvertising()
+        return cb.captured
+    }
+
+    @Test
+    fun `una conexion entrante muestra el popup con el endpoint correcto`() {
+        val advertising = startAdvertisingCapturing()
+
+        advertising.onConnectionInitiated(ENDPOINT, mockk(relaxed = true))
+
+        assertEquals(ENDPOINT, service.showConnectionDialog.value?.first)
+        assertEquals(NearbyStatus.IN_PROGRESS, service.nearbyMode.value)
+    }
+
+    @Test
+    fun `BUG si nadie responde al popup, expira y se limpia el dialogo obsoleto`() {
+        val advertising = startAdvertisingCapturing()
+        advertising.onConnectionInitiated(ENDPOINT, mockk(relaxed = true))
+
+        dispatcher.scheduler.advanceTimeBy(20_001)
+        dispatcher.scheduler.runCurrent()
+
+        assertNull(service.showConnectionDialog.value)
+        assertEquals(NearbyStatus.CONNECTION_ERROR, service.nearbyMode.value)
+    }
+
+    @Test
+    fun `BUG un handshake fallido limpia el popup de ese endpoint`() {
+        val advertising = startAdvertisingCapturing()
+        advertising.onConnectionInitiated(ENDPOINT, mockk(relaxed = true))
+
+        advertising.onConnectionResult(ENDPOINT, resolution(ConnectionsStatusCodes.STATUS_ENDPOINT_IO_ERROR))
+
+        assertNull(service.showConnectionDialog.value)
+    }
+
+    @Test
+    fun `la desconexion del endpoint limpia su popup pendiente`() {
+        val advertising = startAdvertisingCapturing()
+        advertising.onConnectionInitiated(ENDPOINT, mockk(relaxed = true))
+
+        advertising.onDisconnected(ENDPOINT)
+
+        assertNull(service.showConnectionDialog.value)
+    }
+
+    @Test
+    fun `el fallo de un endpoint no borra el popup de otro dispositivo`() {
+        val advertising = startAdvertisingCapturing()
+        advertising.onConnectionInitiated("otro", mockk(relaxed = true))
+
+        advertising.onDisconnected(ENDPOINT)
+
+        assertEquals("otro", service.showConnectionDialog.value?.first)
+    }
+
+    // ── Enlace roto detectado al señalizar ────────────────────────────────────
+
+    @Test
+    fun `BUG si la señal no sale tras los reintentos el endpoint se da por roto`() {
+        // Sintoma: llamas y el otro lado nunca recibe el popup de llamada entrante.
+        connect()
+        every { client.sendPayload(any<String>(), any()) } returns failedTask(ConnectionsStatusCodes.STATUS_ERROR)
+
+        service.sendCallSignal(ENDPOINT, ConnectionSignalsTypes.INCOMING_CALL)
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(service.connectedEndpoints.value.isEmpty())
+        assertEquals(NearbyStatus.CONNECTION_ERROR, service.nearbyMode.value)
+        verify { client.disconnectFromEndpoint(ENDPOINT) }
+    }
+
+    @Test
+    fun `un fallo transitorio que se recupera en un reintento no desconecta`() {
+        connect()
+        every { client.sendPayload(any<String>(), any()) } returnsMany listOf(
+            failedTask(ConnectionsStatusCodes.STATUS_ERROR), completedTask()
+        )
+
+        service.sendCallSignal(ENDPOINT, ConnectionSignalsTypes.INCOMING_CALL)
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(service.connectedEndpoints.value.any { it.first == ENDPOINT })
+        assertEquals(NearbyStatus.CONNECTION_SUCCESS, service.nearbyMode.value)
     }
 
     // ── Señalización ──────────────────────────────────────────────────────────

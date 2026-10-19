@@ -167,13 +167,24 @@ class ViewModelAppTest {
         assertEquals("Desconectado", vm.toastMessage.value)
     }
 
-    @Test fun `RestartConnection limpia y vuelve a buscar`() {
+    @Test fun `RestartConnection reinicia solo la busqueda sin cortar conexiones`() {
         vm.onEvent(MainEvent.RestartConnection)
 
         verify(ordering = io.mockk.Ordering.ORDERED) {
-            nearby.cleanup()
+            nearby.stopDiscovery()
             nearby.startDiscovery(any(), any())
         }
+        // cleanup() = stopAllEndpoints: colgaria llamadas activas al refrescar la lista.
+        verify(exactly = 0) { nearby.cleanup() }
+    }
+
+    @Test fun `StartConnection reabre el sheet en modo busqueda aunque se hubiera dejado en anunciar`() {
+        vm.onEvent(MainEvent.ChangeMode(1))
+        vm.onEvent(MainEvent.CloseBottomSheet)
+
+        vm.onEvent(MainEvent.StartConnection)
+
+        assertEquals(0, vm.uiState.value.selectedIndex)
     }
 
     // ── Delegaciones y ciclo de vida ──────────────────────────────────────────
