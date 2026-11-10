@@ -26,6 +26,7 @@ sealed interface MainEvent {
     data object CloseBottomSheet : MainEvent
     data object RestartConnection: MainEvent
 
+    data class SetDeviceName(val name: String) : MainEvent
     data class ChangeMode(val index: Int) : MainEvent
     data class Connect(val endpointId: String) : MainEvent
 

@@ -75,6 +75,17 @@ class AudioEngine @Inject constructor(
     private var playbackJob: Job? = null
     private var incomingFrames: Channel<ByteArray>? = null
 
+    private val stats = CallStats()
+
+    /** Foto de las estadísticas de la llamada; las tasas en kbps las calcula el caller. */
+    fun statsSnapshot(txKbps: Float = 0f, rxKbps: Float = 0f): CallDebugStats = stats.snapshot(txKbps, rxKbps)
+
+    fun resetStats() = stats.reset()
+
+    fun beginPing(): Int = stats.beginPing()
+
+    fun onPongReceived(id: Int) = stats.onPongReceived(id)
+
     // ── Callbacks hacia el coordinador ────────────────────────────────────────
 
     var onCaptureError: (() -> Unit)? = null
@@ -123,7 +134,9 @@ class AudioEngine @Inject constructor(
      * Se descarta silenciosamente si la reproducción no está activa.
      */
     fun feedIncomingAudioFrame(frame: ByteArray) {
-        incomingFrames?.trySend(frame)
+        val channel = incomingFrames ?: return
+        stats.onPacketReceived(frame.size)
+        if (channel.trySend(frame).isFailure && !channel.isClosedForSend) stats.onQueueOverflow()
     }
 
     fun stopCapture() {
@@ -170,6 +183,7 @@ class AudioEngine @Inject constructor(
             var encoder: OpusFrameEncoder? = null
             val sendPacket: PacketSink = { seq, data, len ->
                 nearbyService.sendAudioFrame(endpointId, seq, data, len)
+                stats.onPacketSent(len + 3)
             }
 
             try {
@@ -253,6 +267,7 @@ class AudioEngine @Inject constructor(
                 while (isActive && isPlaying.get()) {
                     val frame = channel.receiveCatching().getOrNull() ?: break
                     decoder.decode(frame, writePcm)
+                    stats.onDecoderStats(decoder)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()

@@ -55,6 +55,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -80,6 +82,7 @@ import com.XDurango.VoLlama.ui.theme.VoLlamaTheme
 import com.google.android.gms.nearby.connection.ConnectionInfo
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.wrapContentSize
 import kotlinx.coroutines.delay
 import androidx.compose.ui.window.Dialog
 import androidx.compose.material3.Surface
@@ -91,6 +94,11 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import kotlin.time.Duration.Companion.milliseconds
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.filled.Settings
+
+import androidx.compose.material3.DropdownMenuItem
+
 private const val TIMEOUT_SECONDS = 7
 
 /**
@@ -634,7 +642,33 @@ private fun rememberNearbyPermissions(): Array<String> {
     }
 }
 
-
+@Composable
+private fun ChangeNameDialog(
+    currentName: String,
+    onDismissRequest: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var input by rememberSaveable { mutableStateOf(currentName) }
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text("Nombre del dispositivo") },
+        text = {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it.take(NearbyConnectionService.MAX_DEVICE_NAME_LENGTH) },
+                label = { Text("Nombre") },
+                supportingText = { Text("Vacío = marca y modelo") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(input) }) { Text("Guardar") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) { Text("Cancelar") }
+        }
+    )
+}
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @OptIn(ExperimentalMaterial3Api::class)
@@ -642,6 +676,8 @@ private fun rememberNearbyPermissions(): Array<String> {
 fun MainMenuScreen(
     viewModel: ViewModelApp = hiltViewModel()
 ) {
+    var expand by remember { mutableStateOf(false) }
+    var showNameDialog by remember { mutableStateOf(false) }
     val state by viewModel.uiState.collectAsState()
     val incomingCall by viewModel.callStatus.collectAsState()
     val toastMessage by viewModel.toastMessage.collectAsState()
@@ -674,10 +710,34 @@ fun MainMenuScreen(
         )
     }
 
+    if (showNameDialog) {
+        ChangeNameDialog(
+            currentName = state.endpointName,
+            onDismissRequest = { showNameDialog = false },
+            onSave = {
+                viewModel.onEvent(MainEvent.SetDeviceName(it))
+                showNameDialog = false
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("VoLlama - Voice Chat") }
+                title = { Text("VoLlama - Voice Chat") },
+                actions = {
+                    Box {
+                        IconButton(onClick = { expand = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Ajustes")
+                        }
+                        DropdownMenu(expanded = expand, onDismissRequest = { expand = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Cambiar nombre del dispositivo") },
+                                onClick = { expand = false; showNameDialog = true }
+                            )
+                        }
+                    }
+                }
             )
         },
         floatingActionButton = {

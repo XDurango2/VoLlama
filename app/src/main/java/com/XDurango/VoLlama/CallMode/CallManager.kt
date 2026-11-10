@@ -1,6 +1,7 @@
 package com.XDurango.VoLlama.CallMode
 
 import com.XDurango.VoLlama.Audio.AudioEngine
+import com.XDurango.VoLlama.Audio.CallDebugStats
 import com.XDurango.VoLlama.Nearby.NearbyConnectionService
 import android.Manifest
 import androidx.annotation.RequiresPermission
@@ -58,6 +59,9 @@ class CallManager @Inject constructor(
 
     private val _walkieTalkieUiState = MutableStateFlow(WalkieTalkieUiState())
     val walkieTalkieUiState: StateFlow<WalkieTalkieUiState> = _walkieTalkieUiState.asStateFlow()
+
+    private val _debugStats = MutableStateFlow(CallDebugStats())
+    val debugStats: StateFlow<CallDebugStats> = _debugStats.asStateFlow()
 
     private var callTimerJob: Job? = null
 
@@ -211,6 +215,9 @@ class CallManager @Inject constructor(
         }
     }
 
+    /** Llamado por NearbyConnectionService cuando vuelve la respuesta a un ping de RTT. */
+    fun onPong(id: Int) = audioEngine.onPongReceived(id)
+
     /** Llamado cuando el remoto rechaza la llamada. */
     fun onRemoteCallRejected() {
         _callUiState.update { it.copy(isInCall = false, endReason = CallEndReason.REJECTED) }
@@ -292,6 +299,7 @@ class CallManager @Inject constructor(
         audioEngine.stopAll()
         stopCallTimer()
         pendingAudioFrames.clear()
+        _debugStats.value = CallDebugStats()
         isWalkieTalkieMode = false
         // AudioEngine es singleton: mute/altavoz/modo de audio sobreviven a la llamada si no se limpian.
         audioEngine.isMuted = false
@@ -319,11 +327,32 @@ class CallManager @Inject constructor(
         callTimerJob?.cancel()
         callTimerJob = viewModelScope.launch {
             val start = System.currentTimeMillis()
+            audioEngine.resetStats()
+            var lastTx = 0L
+            var lastRx = 0L
+            var lastSample = start
             while (isActive) {
-                _callUiState.update { it.copy(callDuration = System.currentTimeMillis() - start) }
+                val now = System.currentTimeMillis()
+                _callUiState.update { it.copy(callDuration = now - start) }
+                if (_callState.value == CallState.IN_CALL) {
+                    nearbyService.sendPing(endpointId, audioEngine.beginPing())
+                }
+                sampleDebugStats(now - lastSample, lastTx, lastRx).also {
+                    lastTx = it.txBytes; lastRx = it.rxBytes; lastSample = now
+                }
                 delay(1000)
             }
         }
+    }
+
+    /** Toma una foto de las estadísticas; los kbps salen del delta de bytes desde la foto anterior. */
+    private fun sampleDebugStats(elapsedMs: Long, lastTxBytes: Long, lastRxBytes: Long): CallDebugStats {
+        val raw = audioEngine.statsSnapshot()
+        val seconds = elapsedMs / 1000f
+        fun kbps(delta: Long) = if (seconds > 0f) delta * 8f / 1000f / seconds else 0f
+        val stats = raw.copy(txKbps = kbps(raw.txBytes - lastTxBytes), rxKbps = kbps(raw.rxBytes - lastRxBytes))
+        _debugStats.value = stats
+        return stats
     }
 
     private fun stopCallTimer() {

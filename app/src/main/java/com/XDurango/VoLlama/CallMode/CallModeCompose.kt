@@ -19,12 +19,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.MicOff
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.twotone.CallEnd
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -34,6 +36,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.font.FontFamily
+import com.XDurango.VoLlama.Audio.CallDebugStats
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -78,6 +85,7 @@ class CallModeActivity : ComponentActivity() {
                 val viewModel: CallManager = hiltViewModel()
                 val callState by viewModel.callState.collectAsState()
                 val callUiState by viewModel.callUiState.collectAsState()
+                val debugStats by viewModel.debugStats.collectAsState()
 
                 BackHandler { viewModel.onCallEvent(CallEvent.EndCall) }
 
@@ -113,7 +121,8 @@ class CallModeActivity : ComponentActivity() {
                     endpointId = endpointId,
                     endpointName = endpointName,
                     callState = callState,
-                    callUiState = callUiState
+                    callUiState = callUiState,
+                    debugStats = debugStats
                 )
             }
         }
@@ -131,14 +140,16 @@ fun CallScreen(
     endpointName: String,
     endpointId: String,
     callState: CallState = CallState.IN_CALL,
-    callUiState: CallUiState = CallUiState()
+    callUiState: CallUiState = CallUiState(),
+    debugStats: CallDebugStats = CallDebugStats()
 ) {
     CallScreenContent(
         endpointName = endpointName,
         endpointId = endpointId,
         callState = callState,
         callUiState = callUiState,
-        onEvent = viewModel::onCallEvent
+        onEvent = viewModel::onCallEvent,
+        debugStats = debugStats
     )
 }
 
@@ -149,14 +160,17 @@ fun CallScreenContent(
     endpointId: String,
     callState: CallState,
     callUiState: CallUiState,
-    onEvent: (CallEvent) -> Unit
+    onEvent: (CallEvent) -> Unit,
+    debugStats: CallDebugStats = CallDebugStats()
 ) {
+    var showDebug by remember { mutableStateOf(false) }
     val initials = if (endpointName.isNotEmpty()) endpointName.take(1).uppercase() else "?"
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color(0xFF121212)
     ) { paddingValues ->
+        Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -273,6 +287,67 @@ fun CallScreenContent(
                             tint = Color.White
                         )
                     }
+                }
+            }
+        }
+        IconButton(
+            onClick = { showDebug = !showDebug },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(paddingValues)
+                .padding(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.BugReport,
+                contentDescription = "Debug de conexión",
+                tint = if (showDebug) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.5f)
+            )
+        }
+        if (showDebug) {
+            CallDebugPanel(
+                stats = debugStats,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(paddingValues)
+                    .padding(top = 48.dp, start = 16.dp, end = 16.dp)
+            )
+        }
+        }
+    }
+}
+
+@Composable
+internal fun CallDebugPanel(stats: CallDebugStats, modifier: Modifier = Modifier) {
+    val lastRx = if (stats.msSinceLastRx < 0) "—" else "${stats.msSinceLastRx} ms"
+    val latency = if (stats.rttAvgMs < 0f) "—"
+        else "%.0f ms (RTT %.0f, último %.0f)".format(stats.oneWayMs, stats.rttAvgMs, stats.rttLastMs)
+    val rows = listOf(
+        "Latencia ≈ ida" to latency,
+        "Enviado" to "%d pkts · %.1f kbps · %.1f KB".format(stats.txPackets, stats.txKbps, stats.txBytes / 1024f),
+        "Recibido" to "%d pkts · %.1f kbps · %.1f KB".format(stats.rxPackets, stats.rxKbps, stats.rxBytes / 1024f),
+        "Pérdida" to "%.1f %% (%d PLC)".format(stats.lossPercent, stats.concealedFrames),
+        "Jitter" to "%.1f ms (gap máx %d ms)".format(stats.jitterMs, stats.maxGapMs),
+        "Último paquete" to "hace $lastRx",
+        "Decodificados" to stats.decodedPackets.toString(),
+        "Resets decoder" to stats.decoderResets.toString(),
+        "Tardíos/duplicados" to stats.latePacketsDropped.toString(),
+        "Cola desbordada" to stats.queueOverflows.toString()
+    )
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = Color.Black.copy(alpha = 0.75f),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            rows.forEach { (label, value) ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(label, color = Color.LightGray, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        value,
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
             }
         }

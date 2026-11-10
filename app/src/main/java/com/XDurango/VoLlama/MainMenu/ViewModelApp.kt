@@ -65,6 +65,17 @@ class ViewModelApp @Inject constructor(private val nearbyService: NearbyConnecti
                 _uiState.update { it.copy(selectedIndex = event.index) }
             }
 
+            is MainEvent.SetDeviceName -> {
+                nearbyService.setDeviceName(event.name)
+                _uiState.update { it.copy(endpointName = nearbyService.endpoint) }
+                // El nombre anunciado solo cambia al reiniciar advertising.
+                if (_uiState.value.showBottomSheet && _uiState.value.selectedIndex == 1) {
+                    stopAdvertising()
+                    startAdvertising()
+                }
+                _toastMessage.value = "Nombre actualizado"
+            }
+
             is MainEvent.Connect -> {
                 nearbyService.requestConnection(event.endpointId)
                 _toastMessage.value = "Intentando conectar..."

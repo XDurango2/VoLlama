@@ -61,10 +61,14 @@ class NearbyConnectionService(private val context: Context) {
 
     companion object {
         const val SERVICE_ID = "com.XDurango.VoLlama"
+        private const val KEY_DEVICE_NAME = "device_name"
+        const val MAX_DEVICE_NAME_LENGTH = 30
 
         // Tag de 1 byte al inicio de cada Payload.BYTES para distinguir señalización de audio.
         private const val TAG_SIGNAL: Byte = 0x53 // 'S'
         private const val TAG_AUDIO: Byte = 0x41  // 'A'
+        private const val TAG_PING: Byte = 0x50   // 'P'
+        private const val TAG_PONG: Byte = 0x51   // 'Q'
 
         private const val MAX_SIGNAL_RETRIES = 3
         private const val SIGNAL_RETRY_DELAY_MS = 300L
@@ -77,7 +81,26 @@ class NearbyConnectionService(private val context: Context) {
         private const val MAX_CONSECUTIVE_PAYLOAD_FAILURES = 10
     }
 
-    val endpoint = "${Build.MANUFACTURER} - ${Build.MODEL}"
+    private val prefs by lazy { context.getSharedPreferences("voLlama_prefs", Context.MODE_PRIVATE) }
+
+    private fun defaultDeviceName() = "${Build.MANUFACTURER} - ${Build.MODEL}"
+
+    /** Nombre con el que aparece este dispositivo: el que elige el usuario, o marca y modelo por defecto. */
+    var endpoint: String = try {
+        prefs.getString(KEY_DEVICE_NAME, null)?.takeIf { it.isNotBlank() } ?: defaultDeviceName()
+    } catch (e: Exception) {
+        defaultDeviceName()
+    }
+        private set
+
+    /** Guarda el nombre elegido por el usuario (vacío = volver al nombre por defecto). */
+    fun setDeviceName(name: String) {
+        val clean = name.trim().take(MAX_DEVICE_NAME_LENGTH)
+        endpoint = clean.ifEmpty { defaultDeviceName() }
+        try {
+            prefs.edit().putString(KEY_DEVICE_NAME, clean).apply()
+        } catch (e: Exception) { e.printStackTrace() }
+    }
     val connectionsClient by lazy { Nearby.getConnectionsClient(context) }
 
     private var callManager: CallManager? = null
@@ -289,6 +312,16 @@ class NearbyConnectionService(private val context: Context) {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
+    /** Ping para medir RTT: [TAG_PING][id 2 bytes]. El otro lado responde con el mismo id. */
+    fun sendPing(endpointId: String, id: Int) {
+        try {
+            connectionsClient.sendPayload(
+                endpointId,
+                Payload.fromBytes(byteArrayOf(TAG_PING, (id shr 8).toByte(), id.toByte()))
+            )
+        } catch (e: Exception) { e.printStackTrace() }
+    }
+
     fun clearIncomingCallSignal() {
         _receivedSignals.value = null
     }
@@ -431,6 +464,17 @@ class NearbyConnectionService(private val context: Context) {
                         when (bytes[0]) {
                             TAG_AUDIO -> {
                                 callManager?.onIncomingAudioFrame(bytes.copyOfRange(1, bytes.size))
+                            }
+                            TAG_PING -> {
+                                if (bytes.size >= 3) {
+                                    bytes[0] = TAG_PONG
+                                    connectionsClient.sendPayload(endpointId, Payload.fromBytes(bytes))
+                                }
+                            }
+                            TAG_PONG -> {
+                                if (bytes.size >= 3) {
+                                    callManager?.onPong(((bytes[1].toInt() and 0xFF) shl 8) or (bytes[2].toInt() and 0xFF))
+                                }
                             }
                             TAG_SIGNAL -> {
                                 val json = String(bytes, 1, bytes.size - 1)
